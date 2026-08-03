@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+.env.*
+!.env.example
+frontend/node_modules/
+frontend/dist/
+storage/*.sqlite3
+storage/*.log
+storage/uploads/*
+!storage/uploads/.gitkeep
+storage/extracted-assets/*
+!storage/extracted-assets/.gitkeep
+storage/previews/*
+!storage/previews/.gitkeep
