@@ -43,6 +43,25 @@ cd frontend
 npm run build
 ```
 
+## Deploy thử bằng Docker
+
+Yêu cầu: Docker Desktop hoặc Docker Engine có Compose plugin.
+
+```powershell
+Copy-Item .env.production.example .env.production
+docker compose up --build
+```
+
+Mở `http://127.0.0.1:8000`.
+
+Kiểm tra môi trường:
+
+```text
+http://127.0.0.1:8000/api/health
+```
+
+Khi deploy online, cần giữ persistent volume cho `storage/` vì SQLite database, file upload và ảnh công thức đều nằm ở đó. Xem thêm [deploy_note.md](deploy_note.md).
+
 Parser CLI:
 
 ```powershell

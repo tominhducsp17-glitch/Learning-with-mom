@@ -1,13 +1,15 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, RefObject } from "react";
+import type { CSSProperties, ReactNode, RefObject } from "react";
 import {
   AlertTriangle,
   BarChart3,
   BookOpen,
   Check,
   ChevronDown,
+  ChevronRight,
   Clock,
   Download,
+  Eye,
   FileText,
   Flower2,
   GraduationCap,
@@ -21,10 +23,12 @@ import {
   Sigma,
   Upload,
   Users,
+  X,
 } from "lucide-react";
 import {
   autosaveSubmission,
   assignmentCsvUrl,
+  assignmentXlsxUrl,
   getAssignment,
   getAssignmentAnalytics,
   getClasses,
@@ -47,6 +51,7 @@ import type {
   ContentBlock,
   DraftSummary,
   ExamDraft,
+  GradingQuestionDetail,
   GradingResult,
   Overview,
   ParsedExam,
@@ -88,6 +93,7 @@ function App() {
   const [activeSection, setActiveSection] = useState<SectionType>("single_choice");
   const [activeQuestion, setActiveQuestion] = useState(1);
   const [editMode, setEditMode] = useState(false);
+  const [showMarkupPanel, setShowMarkupPanel] = useState(false);
   const [showWarnings, setShowWarnings] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -104,6 +110,25 @@ function App() {
     void refreshOverview();
     void refreshClasses();
   }, []);
+
+  useEffect(() => {
+    if (!assignment?.code) return;
+    const code = assignment.code;
+    const intervalId = window.setInterval(() => {
+      Promise.all([
+        getAssignmentResults(code),
+        getAssignmentAnalytics(code),
+      ])
+        .then(([nextResults, nextAnalytics]) => {
+          setAssignmentResults(nextResults);
+          setAssignmentAnalytics(nextAnalytics);
+        })
+        .catch(() => {
+          // Keep the current dashboard visible if a background refresh fails.
+        });
+    }, 30000);
+    return () => window.clearInterval(intervalId);
+  }, [assignment?.code]);
 
   const totalQuestions = useMemo(
     () => draft?.exam.sections.reduce((total, item) => total + item.questions.length, 0) ?? 0,
@@ -465,6 +490,15 @@ function App() {
           >
             <Pencil size={18} />
           </button>
+          <button
+            className={`icon-button ${showMarkupPanel ? "is-active" : ""}`}
+            title="Xem markup nội dung"
+            aria-label="Xem markup nội dung"
+            aria-pressed={showMarkupPanel}
+            onClick={() => setShowMarkupPanel((value) => !value)}
+          >
+            <Sigma size={18} />
+          </button>
           <button className="primary-button" disabled={!dirty || saving} onClick={() => void handleSave()}>
             {saving ? <LoaderCircle className="spin" size={18} /> : dirty ? <Save size={18} /> : <Check size={18} />}
             <span>{saving ? "Đang lưu" : dirty ? "Lưu bản nháp" : "Đã lưu"}</span>
@@ -674,12 +708,15 @@ function App() {
 
         <section className="question-stage">
           {question && (
-            <QuestionContent
-              sectionType={activeSection}
-              question={question}
-              editMode={editMode}
-              onChange={updateQuestion}
-            />
+            <>
+              <QuestionContent
+                sectionType={activeSection}
+                question={question}
+                editMode={editMode}
+                onChange={updateQuestion}
+              />
+              {showMarkupPanel && <MarkupPanel sectionType={activeSection} question={question} />}
+            </>
           )}
         </section>
 
@@ -1059,9 +1096,19 @@ type QuestionContentProps = {
 function QuestionContent({ sectionType, question, editMode, onChange }: QuestionContentProps) {
   function updateBlocks(target: "prompt" | "options" | "statements", label: string | null, blocks: ContentBlock[]) {
     onChange((item) => {
-      if (target === "prompt") item.prompt_blocks = blocks;
-      if (target === "options" && label && item.options) item.options[label] = blocks;
-      if (target === "statements" && label && item.statements) item.statements[label] = blocks;
+      const markup = blocksToMarkup(blocks);
+      if (target === "prompt") {
+        item.prompt_blocks = blocks;
+        item.prompt_markup = markup;
+      }
+      if (target === "options" && label && item.options) {
+        item.options[label] = blocks;
+        item.options_markup = { ...(item.options_markup ?? {}), [label]: markup };
+      }
+      if (target === "statements" && label && item.statements) {
+        item.statements[label] = blocks;
+        item.statements_markup = { ...(item.statements_markup ?? {}), [label]: markup };
+      }
     });
   }
 
@@ -1070,6 +1117,7 @@ function QuestionContent({ sectionType, question, editMode, onChange }: Question
       <div className="question-kicker">Câu {question.number}</div>
       <Blocks
         blocks={question.prompt_blocks}
+        markup={question.prompt_markup}
         editMode={editMode}
         onChange={(blocks) => updateBlocks("prompt", null, blocks)}
       />
@@ -1079,7 +1127,12 @@ function QuestionContent({ sectionType, question, editMode, onChange }: Question
           {Object.entries(question.options ?? {}).map(([label, blocks]) => (
             <div className="content-row" key={label}>
               <span className="content-label">{label}</span>
-              <Blocks blocks={blocks} editMode={editMode} onChange={(next) => updateBlocks("options", label, next)} />
+              <Blocks
+                blocks={blocks}
+                markup={question.options_markup?.[label]}
+                editMode={editMode}
+                onChange={(next) => updateBlocks("options", label, next)}
+              />
             </div>
           ))}
         </div>
@@ -1090,7 +1143,12 @@ function QuestionContent({ sectionType, question, editMode, onChange }: Question
           {Object.entries(question.statements ?? {}).map(([label, blocks]) => (
             <div className="content-row" key={label}>
               <span className="content-label lowercase">{label}</span>
-              <Blocks blocks={blocks} editMode={editMode} onChange={(next) => updateBlocks("statements", label, next)} />
+              <Blocks
+                blocks={blocks}
+                markup={question.statements_markup?.[label]}
+                editMode={editMode}
+                onChange={(next) => updateBlocks("statements", label, next)}
+              />
             </div>
           ))}
         </div>
@@ -1101,7 +1159,56 @@ function QuestionContent({ sectionType, question, editMode, onChange }: Question
   );
 }
 
-function Blocks({ blocks, editMode, onChange }: { blocks: ContentBlock[]; editMode: boolean; onChange: (blocks: ContentBlock[]) => void }) {
+function MarkupPanel({ sectionType, question }: { sectionType: SectionType; question: Question }) {
+  const entries: Array<[string, string]> = [["Prompt", question.prompt_markup ?? blocksToMarkup(question.prompt_blocks)]];
+  if (sectionType === "single_choice") {
+    Object.entries(question.options ?? {}).forEach(([label, blocks]) => {
+      entries.push([`Đáp án ${label}`, question.options_markup?.[label] ?? blocksToMarkup(blocks)]);
+    });
+  }
+  if (sectionType === "true_false") {
+    Object.entries(question.statements ?? {}).forEach(([label, blocks]) => {
+      entries.push([`Ý ${label}`, question.statements_markup?.[label] ?? blocksToMarkup(blocks)]);
+    });
+  }
+
+  const combined = entries.map(([label, value]) => `# ${label}\n${value}`).join("\n\n");
+  return (
+    <section className="markup-panel">
+      <div className="markup-panel-head">
+        <div>
+          <strong>Markup câu {question.number}</strong>
+          <span>Token ảnh dùng dạng [img:$img_0001$]</span>
+        </div>
+        <button className="secondary-button" type="button" onClick={() => void navigator.clipboard?.writeText(combined)}>
+          <CopyIcon />
+          <span>Copy</span>
+        </button>
+      </div>
+      <textarea readOnly value={combined} rows={Math.min(14, Math.max(6, combined.split("\n").length + 1))} />
+    </section>
+  );
+}
+
+function CopyIcon() {
+  return <FileText size={15} />;
+}
+
+function Blocks({
+  blocks,
+  markup,
+  editMode,
+  onChange,
+}: {
+  blocks: ContentBlock[];
+  markup?: string;
+  editMode: boolean;
+  onChange: (blocks: ContentBlock[]) => void;
+}) {
+  if (!editMode && markup) {
+    return <div className="content-blocks">{renderMarkup(markup, blocks)}</div>;
+  }
+
   return (
     <div className={`content-blocks ${editMode ? "is-editing" : ""}`}>
       {blocks.map((block, index) => {
@@ -1135,17 +1242,80 @@ function Blocks({ blocks, editMode, onChange }: { blocks: ContentBlock[]; editMo
   );
 }
 
+function renderMarkup(markup: string, blocks: ContentBlock[]) {
+  const imageBlocks = blocks.filter((block): block is Extract<ContentBlock, { type: "image" }> => block.type === "image");
+  const imageIndexes = new Map<string, number>();
+  const nodes: ReactNode[] = [];
+  const tokenPattern = /\[img:\$([A-Za-z0-9_-]+)\$\]/g;
+  let cursor = 0;
+  let nodeIndex = 0;
+
+  for (const match of markup.matchAll(tokenPattern)) {
+    if (match.index > cursor) {
+      nodes.push(<span key={`text-${nodeIndex++}`}>{unescapeMarkupText(markup.slice(cursor, match.index))}</span>);
+    }
+
+    const assetId = match[1];
+    const occurrence = imageIndexes.get(assetId) ?? 0;
+    const matchingImages = imageBlocks.filter((block) => block.asset_id === assetId);
+    const imageBlock = matchingImages[occurrence] ?? matchingImages[0];
+    imageIndexes.set(assetId, occurrence + 1);
+
+    if (imageBlock) {
+      nodes.push(
+        <span className="asset-wrap" key={`${assetId}-${nodeIndex++}`} style={imageWrapStyle(imageBlock)}>
+          <img src={imageBlock.render_path} alt={`Công thức ${assetId}`} title={assetId} style={imageStyle(imageBlock)} />
+          {imageBlock.status === "placeholder" && <ImageOff size={13} aria-label="Ảnh placeholder" />}
+        </span>,
+      );
+    } else {
+      nodes.push(<span key={`missing-${nodeIndex++}`}>{match[0]}</span>);
+    }
+
+    cursor = match.index + match[0].length;
+  }
+
+  if (cursor < markup.length) {
+    nodes.push(<span key={`text-${nodeIndex++}`}>{unescapeMarkupText(markup.slice(cursor))}</span>);
+  }
+  return nodes;
+}
+
+function blocksToMarkup(blocks: ContentBlock[]) {
+  return blocks.map((block) => {
+    if (block.type === "image") return `[img:$${block.asset_id}$]`;
+    return escapeMarkupText(block.text);
+  }).join("");
+}
+
+function escapeMarkupText(text: string) {
+  return text.replace(/\\/g, "\\\\").replace(/\[/g, "\\[");
+}
+
+function unescapeMarkupText(text: string) {
+  return text.replace(/\\\[/g, "[").replace(/\\\\/g, "\\");
+}
+
 function TeacherResults({ results }: { results: AssignmentResults }) {
   const submittedCount = results.submissions.filter((submission) => submission.status === "submitted").length;
+  const [expandedId, setExpandedId] = useState("");
   return (
     <section className="results-strip">
       <div className="results-heading">
         <Sigma size={18} />
         <strong>Bảng điểm {results.assignment.classroom.name}</strong>
         <span>{submittedCount}/{results.assignment.student_count} đã nộp</span>
+        <a className="results-export-button" href={assignmentXlsxUrl(results.assignment.code)}>
+          <Download size={15} />
+          <span>Xuất Excel</span>
+        </a>
+        <span className="results-hint">
+          <Eye size={14} /> Bấm vào học sinh để xem chi tiết
+        </span>
       </div>
       <div className="results-table">
         <div className="results-row header">
+          <span></span>
           <span>Học sinh</span>
           <span>Trạng thái</span>
           <span>Điểm</span>
@@ -1153,18 +1323,158 @@ function TeacherResults({ results }: { results: AssignmentResults }) {
           <span>PHẦN II</span>
           <span>PHẦN III</span>
         </div>
-        {results.submissions.map((submission) => (
-          <div className="results-row" key={submission.id}>
-            <span>{submission.student?.name ?? "Không rõ"}</span>
-            <span className={`status-pill ${submission.status}`}>{submissionStatusLabel(submission.status)}</span>
-            <strong>{formatScore(submission.total_score, submission.max_score)}</strong>
-            <span>{formatSectionScore(submission.grading_detail, "single_choice")}</span>
-            <span>{formatSectionScore(submission.grading_detail, "true_false")}</span>
-            <span>{formatSectionScore(submission.grading_detail, "short_answer")}</span>
-          </div>
-        ))}
+        {results.submissions.map((submission) => {
+          const isExpanded = expandedId === submission.id;
+          return (
+            <div key={submission.id}>
+              <button
+                type="button"
+                className={`results-row clickable ${isExpanded ? "is-expanded" : ""}`}
+                onClick={() => setExpandedId(isExpanded ? "" : submission.id)}
+                aria-expanded={isExpanded}
+                title={`Xem chi tiết bài làm của ${submission.student?.name ?? "học sinh"}`}
+              >
+                <span className="expand-icon">
+                  {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </span>
+                <span>{submission.student?.name ?? "Không rõ"}</span>
+                <span className={`status-pill ${submission.status}`}>{submissionStatusLabel(submission.status)}</span>
+                <strong>{formatScore(submission.total_score, submission.max_score)}</strong>
+                <span>{formatSectionScore(submission.grading_detail, "single_choice")}</span>
+                <span>{formatSectionScore(submission.grading_detail, "true_false")}</span>
+                <span>{formatSectionScore(submission.grading_detail, "short_answer")}</span>
+              </button>
+              {isExpanded && (
+                <SubmissionDetail submission={submission} onClose={() => setExpandedId("")} />
+              )}
+            </div>
+          );
+        })}
       </div>
     </section>
+  );
+}
+
+type SubmissionEntry = AssignmentResults["submissions"][number];
+
+function SubmissionDetail({ submission, onClose }: { submission: SubmissionEntry; onClose: () => void }) {
+  const student = submission.student;
+  const grade = submission.grading_detail;
+
+  if (submission.status === "not_started") {
+    return (
+      <div className="submission-detail">
+        <div className="detail-empty">
+          <BookOpen size={28} />
+          <strong>{student?.name ?? "Học sinh"} chưa bắt đầu làm bài.</strong>
+          <span>Khi học sinh vào bài, trạng thái sẽ tự cập nhật.</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (submission.status === "in_progress" && !grade) {
+    return (
+      <div className="submission-detail">
+        <div className="detail-empty">
+          <Clock size={28} />
+          <strong>{student?.name ?? "Học sinh"} đang làm bài.</strong>
+          <span>Bài làm chưa được nộp nên chưa có kết quả chấm.</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="submission-detail">
+      <div className="detail-header">
+        <div className="detail-student-info">
+          <strong>{student?.name ?? "Không rõ"}</strong>
+          {student?.student_code && <span className="detail-code">{student.student_code}</span>}
+          <span className={`status-pill ${submission.status}`}>{submissionStatusLabel(submission.status)}</span>
+        </div>
+        <button className="icon-button detail-close" type="button" title="Đóng chi tiết" onClick={onClose}>
+          <X size={14} />
+        </button>
+      </div>
+
+      <div className="detail-meta">
+        {submission.created_at && (
+          <div><span>Bắt đầu:</span> <b>{formatDateTime(submission.created_at)}</b></div>
+        )}
+        {submission.updated_at && (
+          <div><span>Cập nhật:</span> <b>{formatDateTime(submission.updated_at)}</b></div>
+        )}
+        {submission.submitted_at && (
+          <div><span>Nộp bài:</span> <b>{formatDateTime(submission.submitted_at)}</b></div>
+        )}
+      </div>
+
+      {grade ? (
+        <>
+          <div className="detail-scores">
+            <div className="detail-total">
+              <span>Tổng điểm</span>
+              <strong>{grade.total_score}/{grade.max_score}</strong>
+            </div>
+            <div className="detail-section-scores">
+              <div><span>PHẦN I</span><b>{formatSectionScore(grade, "single_choice")}</b></div>
+              <div><span>PHẦN II</span><b>{formatSectionScore(grade, "true_false")}</b></div>
+              <div><span>PHẦN III</span><b>{formatSectionScore(grade, "short_answer")}</b></div>
+            </div>
+          </div>
+
+          <div className="detail-questions">
+            <div className="detail-q-row header">
+              <span>Phần</span>
+              <span>Câu</span>
+              <span>HS trả lời</span>
+              <span>Đáp án đúng</span>
+              <span>Kết quả</span>
+              <span>Điểm</span>
+            </div>
+            {grade.questions.map((q) => (
+              <QuestionDetailRow key={`${q.section_type}-${q.number}`} detail={q} />
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="detail-empty compact">
+          <span>Chưa có kết quả chấm điểm cho bài làm này.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuestionDetailRow({ detail }: { detail: GradingQuestionDetail }) {
+  const sectionLabel = SECTION_LABELS[detail.section_type] ?? detail.section_type;
+  const hasItems = detail.section_type === "true_false" && detail.items && Object.keys(detail.items).length > 0;
+
+  return (
+    <>
+      <div className={`detail-q-row ${detail.correct ? "" : "is-wrong"}`}>
+        <span className="detail-section-label">{sectionLabel}</span>
+        <span>Câu {detail.number}</span>
+        <span className="detail-answer">{formatAnswerDisplay(detail.actual, detail.section_type)}</span>
+        <span className="detail-answer">{formatAnswerDisplay(detail.expected, detail.section_type)}</span>
+        <span>{detail.correct ? <span className="correct-badge">✓ Đúng</span> : <span className="wrong-badge">✗ Sai</span>}</span>
+        <span className="detail-score">{detail.score}/{detail.max_score}</span>
+      </div>
+      {hasItems && (
+        <div className="detail-items">
+          {Object.entries(detail.items!).map(([label, item]) => (
+            <div key={label} className={`detail-item-row ${item.correct ? "" : "is-wrong"}`}>
+              <span className="detail-item-label">{label})</span>
+              <span>{formatItemValue(item.actual)}</span>
+              <span>{formatItemValue(item.expected)}</span>
+              <span>{item.correct ? <span className="correct-badge">✓</span> : <span className="wrong-badge">✗</span>}</span>
+              <span className="detail-score">{item.score}/{item.max_score}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1220,6 +1530,14 @@ function TeacherAnalytics({ analytics }: { analytics: AssignmentAnalytics }) {
     </section>
   );
 }
+
+type StudentQuestionItem = {
+  sectionType: SectionType;
+  sectionTitle: string;
+  sectionName: string;
+  question: Question;
+  key: string;
+};
 
 function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
   const [loadedAssignment, setLoadedAssignment] = useState<Assignment | null>(null);
@@ -1379,6 +1697,11 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
       setGrade(result.grade);
       setSubmitted(true);
       if (auto) setError("Đã hết thời gian. Hệ thống đã tự nộp bài.");
+      // Re-fetch to get correct_answer in exam when show_answers is on
+      try {
+        const updated = await getAssignment(code, selectedStudentId);
+        setLoadedAssignment(updated);
+      } catch { /* ignore re-fetch failure */ }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : auto ? "Hết giờ nhưng chưa thể tự nộp bài." : "Không thể nộp bài.");
     } finally {
@@ -1434,103 +1757,235 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
 
       {error && <div className="error-banner workspace-error">{error}</div>}
 
-      {submitted && !grade && <StudentSubmittedNotice showScore={loadedAssignment.show_score} />}
-      {grade && <StudentGrade grade={grade} showAnswers={loadedAssignment.show_answers} />}
-
-      <section className="student-picker">
-        <label htmlFor="student-select">Học sinh</label>
-        <select
-          id="student-select"
-          value={selectedStudentId}
-          disabled={saving}
-          onChange={(event) => {
-            setSelectedStudentId(event.target.value);
-            setAnswers({});
-            setStartedAt(null);
-            setRemainingSeconds(null);
-            setTimeExpired(false);
-            setStudentQuestionIndex(0);
-            setSubmitted(false);
-            setGrade(null);
-            setError("");
-          }}
-        >
-          {loadedAssignment.students.map((student) => (
-            <option key={student.id} value={student.id}>
-              {student.student_code} - {student.name}
-            </option>
-          ))}
-        </select>
-        <span>{selectedStudent?.status === "submitted" || submitted ? "Đã nộp" : saving ? "Đang lưu" : "Sẵn sàng"}</span>
-      </section>
-
-      <section className="student-progress">
-        <div className="progress-head">
-          <strong>{answeredCount}/{studentQuestions.length} câu đã làm</strong>
-          <span>Câu {studentQuestionIndex + 1}/{studentQuestions.length}</span>
-        </div>
-        <div className="progress-track">
-          <i style={{ width: `${studentQuestions.length ? (answeredCount / studentQuestions.length) * 100 : 0}%` }} />
-        </div>
-        <div className="student-question-nav" aria-label="Danh sách câu hỏi">
-          {studentQuestions.map((item, index) => (
-            <button
-              key={`${item.sectionType}-${item.question.number}`}
-              className={[
-                index === studentQuestionIndex ? "is-active" : "",
-                isAnswered(item.sectionType, answers[item.key]) ? "is-answered" : "",
-              ].filter(Boolean).join(" ")}
-              onClick={() => setStudentQuestionIndex(index)}
-              aria-label={`${item.sectionTitle} câu ${item.question.number}`}
+      {submitted ? (
+        <StudentResultScreen
+          grade={grade}
+          showScore={loadedAssignment.show_score}
+          showAnswers={loadedAssignment.show_answers}
+          studentName={selectedStudent?.name ?? ""}
+          answeredCount={answeredCount}
+          totalQuestions={studentQuestions.length}
+          questions={studentQuestions}
+        />
+      ) : (
+        <>
+          <section className="student-picker">
+            <label htmlFor="student-select">Học sinh</label>
+            <select
+              id="student-select"
+              value={selectedStudentId}
+              disabled={saving}
+              onChange={(event) => {
+                setSelectedStudentId(event.target.value);
+                setAnswers({});
+                setStartedAt(null);
+                setRemainingSeconds(null);
+                setTimeExpired(false);
+                setStudentQuestionIndex(0);
+                setSubmitted(false);
+                setGrade(null);
+                setError("");
+              }}
             >
-              {index + 1}
-            </button>
-          ))}
-        </div>
-      </section>
+              {loadedAssignment.students.map((student) => (
+                <option key={student.id} value={student.id}>
+                  {student.student_code} - {student.name}
+                </option>
+              ))}
+            </select>
+            <span>{saving ? "Đang lưu" : "Sẵn sàng"}</span>
+          </section>
 
-      <div className="student-paper single-question">
-        {currentStudentQuestion && (
-          <section className="student-section" key={`${currentStudentQuestion.sectionType}-${currentStudentQuestion.question.number}`}>
-            <div className="student-section-title">
-              <strong>{currentStudentQuestion.sectionTitle}</strong>
-              <span>{currentStudentQuestion.sectionName}</span>
+          <section className="student-progress">
+            <div className="progress-head">
+              <strong>{answeredCount}/{studentQuestions.length} câu đã làm</strong>
+              <span>Câu {studentQuestionIndex + 1}/{studentQuestions.length}</span>
             </div>
-            <article className="student-question">
-              <QuestionContent
-                sectionType={currentStudentQuestion.sectionType}
-                question={currentStudentQuestion.question}
-                editMode={false}
-                onChange={() => undefined}
-              />
-              <StudentAnswerControl
-                sectionType={currentStudentQuestion.sectionType}
-                question={currentStudentQuestion.question}
-                value={answers[currentStudentQuestion.key]}
-                disabled={submitted || timeExpired}
-                onChange={(value) => void updateAnswer(currentStudentQuestion.key, value)}
-              />
-            </article>
-            <div className="student-stepper">
-              <button
-                className="secondary-button"
-                disabled={studentQuestionIndex === 0}
-                onClick={() => setStudentQuestionIndex((index) => Math.max(0, index - 1))}
-              >
-                Câu trước
-              </button>
-              <button
-                className="primary-button"
-                disabled={studentQuestionIndex >= studentQuestions.length - 1}
-                onClick={() => setStudentQuestionIndex((index) => Math.min(studentQuestions.length - 1, index + 1))}
-              >
-                Câu sau
-              </button>
+            <div className="progress-track">
+              <i style={{ width: `${studentQuestions.length ? (answeredCount / studentQuestions.length) * 100 : 0}%` }} />
+            </div>
+            <div className="student-question-nav" aria-label="Danh sách câu hỏi">
+              {studentQuestions.map((item, index) => (
+                <button
+                  key={`${item.sectionType}-${item.question.number}`}
+                  className={[
+                    index === studentQuestionIndex ? "is-active" : "",
+                    isAnswered(item.sectionType, answers[item.key]) ? "is-answered" : "",
+                  ].filter(Boolean).join(" ")}
+                  onClick={() => setStudentQuestionIndex(index)}
+                  aria-label={`${item.sectionTitle} câu ${item.question.number}`}
+                >
+                  {index + 1}
+                </button>
+              ))}
             </div>
           </section>
-        )}
-      </div>
+
+          <div className="student-paper single-question">
+            {currentStudentQuestion && (
+              <section className="student-section" key={`${currentStudentQuestion.sectionType}-${currentStudentQuestion.question.number}`}>
+                <div className="student-section-title">
+                  <strong>{currentStudentQuestion.sectionTitle}</strong>
+                  <span>{currentStudentQuestion.sectionName}</span>
+                </div>
+                <article className="student-question">
+                  <QuestionContent
+                    sectionType={currentStudentQuestion.sectionType}
+                    question={currentStudentQuestion.question}
+                    editMode={false}
+                    onChange={() => undefined}
+                  />
+                  <StudentAnswerControl
+                    sectionType={currentStudentQuestion.sectionType}
+                    question={currentStudentQuestion.question}
+                    value={answers[currentStudentQuestion.key]}
+                    disabled={timeExpired}
+                    onChange={(value) => void updateAnswer(currentStudentQuestion.key, value)}
+                  />
+                </article>
+                <div className="student-stepper">
+                  <button
+                    className="secondary-button"
+                    disabled={studentQuestionIndex === 0}
+                    onClick={() => setStudentQuestionIndex((index) => Math.max(0, index - 1))}
+                  >
+                    Câu trước
+                  </button>
+                  <button
+                    className="primary-button"
+                    disabled={studentQuestionIndex >= studentQuestions.length - 1}
+                    onClick={() => setStudentQuestionIndex((index) => Math.min(studentQuestions.length - 1, index + 1))}
+                  >
+                    Câu sau
+                  </button>
+                </div>
+              </section>
+            )}
+          </div>
+        </>
+      )}
     </main>
+  );
+}
+
+function StudentResultScreen({
+  grade,
+  showScore,
+  showAnswers,
+  studentName,
+  answeredCount,
+  totalQuestions,
+  questions,
+}: {
+  grade: GradingResult | null;
+  showScore: boolean;
+  showAnswers: boolean;
+  studentName: string;
+  answeredCount: number;
+  totalQuestions: number;
+  questions: StudentQuestionItem[];
+}) {
+  if (!showScore || !grade) {
+    return (
+      <section className="student-result-panel waiting">
+        <div className="result-hero-icon">
+          <Check size={34} />
+        </div>
+        <p className="eyebrow">Đã nộp bài</p>
+        <h1>{studentName ? `${studentName} đã nộp bài` : "Bài làm đã được gửi"}</h1>
+        <p>Chờ giáo viên công bố điểm. Bài làm của em đã được hệ thống ghi nhận.</p>
+        <div className="result-mini-stats">
+          <span>{answeredCount}/{totalQuestions} câu đã trả lời</span>
+        </div>
+      </section>
+    );
+  }
+
+  const correctCount = grade.questions.filter((item) => item.correct).length;
+  const scorePercent = grade.max_score > 0 ? Math.round((grade.total_score / grade.max_score) * 100) : 0;
+
+  return (
+    <section className="student-result-panel">
+      <div className="result-summary-card">
+        <div className="result-score-ring" style={{ "--score-percent": `${scorePercent}%` } as CSSProperties}>
+          <strong>{grade.total_score}</strong>
+          <span>/{grade.max_score}</span>
+        </div>
+        <div>
+          <p className="eyebrow">Kết quả bài làm</p>
+          <h1>{studentName ? `Làm tốt rồi, ${studentName}` : "Bài làm đã được chấm"}</h1>
+          <p>{correctCount}/{grade.questions.length} câu đúng. {showAnswers ? "Em có thể xem lại đáp án bên dưới." : "Giáo viên chưa công bố đáp án chi tiết."}</p>
+        </div>
+      </div>
+
+      <div className="result-section-grid">
+        <div><span>PHẦN I</span><strong>{formatSectionScore(grade, "single_choice")}</strong></div>
+        <div><span>PHẦN II</span><strong>{formatSectionScore(grade, "true_false")}</strong></div>
+        <div><span>PHẦN III</span><strong>{formatSectionScore(grade, "short_answer")}</strong></div>
+      </div>
+
+      <div className="student-result-list">
+        <strong>Danh sách câu</strong>
+        {grade.questions.map((detail) => {
+          const item = questions.find(
+            (questionItem) => questionItem.sectionType === detail.section_type && questionItem.question.number === detail.number,
+          );
+          return (
+            <StudentResultQuestion
+              key={`${detail.section_type}-${detail.number}`}
+              detail={detail}
+              showAnswers={showAnswers}
+              questionItem={item}
+            />
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function StudentResultQuestion({
+  detail,
+  showAnswers,
+  questionItem,
+}: {
+  detail: GradingQuestionDetail;
+  showAnswers: boolean;
+  questionItem?: StudentQuestionItem;
+}) {
+  const reviewQuestion = questionItem && showAnswers
+    ? { ...questionItem.question, correct_answer: detail.expected as Question["correct_answer"] }
+    : null;
+
+  return (
+    <div className={`student-result-question ${detail.correct ? "is-correct" : "is-wrong"}`}>
+      <div>
+        <span>{SECTION_LABELS[detail.section_type]} · Câu {detail.number}</span>
+        <strong>{detail.correct ? "Đúng" : "Sai"} · {detail.score}/{detail.max_score} điểm</strong>
+      </div>
+      <div className="student-result-answer">
+        <span>Em chọn: {formatAnswerDisplay(detail.actual, detail.section_type)}</span>
+        {showAnswers && <span>Đáp án: {formatAnswerDisplay(detail.expected, detail.section_type)}</span>}
+      </div>
+      {reviewQuestion && (
+        <div className="student-result-review">
+          <QuestionContent
+            sectionType={detail.section_type}
+            question={reviewQuestion}
+            editMode={false}
+            onChange={() => undefined}
+          />
+          <StudentAnswerControl
+            sectionType={detail.section_type}
+            question={reviewQuestion}
+            value={detail.actual}
+            disabled={true}
+            onChange={() => undefined}
+            showCorrect={true}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1567,48 +2022,90 @@ function StudentAnswerControl({
   value,
   disabled,
   onChange,
+  showCorrect = false,
 }: {
   sectionType: SectionType;
   question: Question;
   value: unknown;
   disabled: boolean;
   onChange: (value: unknown) => void;
+  showCorrect?: boolean;
 }) {
+  const correctAnswer = showCorrect ? question.correct_answer : undefined;
+
   if (sectionType === "single_choice") {
     return (
       <div className="student-answer">
-        <div className="segment-control">
-          {Object.keys(question.options ?? { A: [], B: [], C: [], D: [] }).map((answer) => (
-            <button key={answer} disabled={disabled} className={value === answer ? "is-active" : ""} onClick={() => onChange(answer)}>
-              {answer}
-            </button>
-          ))}
+        <div className={`segment-control ${showCorrect ? "show-correct" : ""}`}>
+          {Object.keys(question.options ?? { A: [], B: [], C: [], D: [] }).map((answer) => {
+            const isSelected = value === answer;
+            const isCorrect = showCorrect && typeof correctAnswer === "string" && correctAnswer.toUpperCase() === answer.toUpperCase();
+            const isWrong = showCorrect && isSelected && !isCorrect;
+            return (
+              <button
+                key={answer}
+                disabled={disabled}
+                className={[
+                  isSelected && !showCorrect ? "is-active" : "",
+                  isCorrect ? "is-correct" : "",
+                  isWrong ? "is-wrong" : "",
+                ].filter(Boolean).join(" ")}
+                onClick={() => onChange(answer)}
+              >
+                {answer}
+                {isCorrect && <Check size={13} />}
+              </button>
+            );
+          })}
         </div>
+        {showCorrect && typeof correctAnswer === "string" && (
+          <div className="correct-answer-note">
+            <Check size={14} /> Đáp án đúng: <b>{correctAnswer}</b>
+          </div>
+        )}
       </div>
     );
   }
 
   if (sectionType === "true_false") {
     const answers = (value ?? {}) as Record<string, string>;
+    const correctAnswers = showCorrect && typeof correctAnswer === "object" && correctAnswer ? correctAnswer as Record<string, string> : null;
     return (
       <div className="student-answer truth-list">
-        {Object.keys(question.statements ?? { a: [], b: [], c: [], d: [] }).map((label) => (
-          <div key={label}>
-            <span>{label}</span>
-            <div className="segment-control compact">
-              {["Đ", "S"].map((answer) => (
-                <button
-                  key={answer}
-                  disabled={disabled}
-                  className={answers[label] === answer ? "is-active" : ""}
-                  onClick={() => onChange({ ...answers, [label]: answer })}
-                >
-                  {answer}
-                </button>
-              ))}
+        {Object.keys(question.statements ?? { a: [], b: [], c: [], d: [] }).map((label) => {
+          const correctValue = correctAnswers?.[label];
+          return (
+            <div key={label}>
+              <span>{label}</span>
+              <div className={`segment-control compact ${showCorrect ? "show-correct" : ""}`}>
+                {["Đ", "S"].map((answer) => {
+                  const isSelected = answers[label] === answer;
+                  const isCorrect = showCorrect && correctValue === answer;
+                  const isWrong = showCorrect && isSelected && !isCorrect;
+                  return (
+                    <button
+                      key={answer}
+                      disabled={disabled}
+                      className={[
+                        isSelected && !showCorrect ? "is-active" : "",
+                        isCorrect ? "is-correct" : "",
+                        isWrong ? "is-wrong" : "",
+                      ].filter(Boolean).join(" ")}
+                      onClick={() => onChange({ ...answers, [label]: answer })}
+                    >
+                      {answer}
+                    </button>
+                  );
+                })}
+              </div>
+              {showCorrect && correctValue && (
+                <span className={answers[label] === correctValue ? "item-correct-mark" : "item-wrong-mark"}>
+                  {answers[label] === correctValue ? "✓" : "✗"}
+                </span>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     );
   }
@@ -1621,6 +2118,11 @@ function StudentAnswerControl({
         value={typeof value === "string" ? value : ""}
         onChange={(event) => onChange(event.target.value)}
       />
+      {showCorrect && typeof correctAnswer === "string" && (
+        <div className="correct-answer-note">
+          <Check size={14} /> Đáp án đúng: <b>{correctAnswer}</b>
+        </div>
+      )}
     </div>
   );
 }
@@ -1737,6 +2239,38 @@ function isAnswered(sectionType: SectionType, value: unknown) {
 function formatScore(score: number | null, maxScore: number | null) {
   if (score == null || maxScore == null) return "-";
   return `${score}/${maxScore}`;
+}
+
+function formatDateTime(isoString: string): string {
+  try {
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) return isoString;
+    return date.toLocaleString("vi-VN", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return isoString;
+  }
+}
+
+function formatAnswerDisplay(value: unknown, sectionType: SectionType): string {
+  if (value == null || value === "") return "—";
+  if (sectionType === "true_false" && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, string>);
+    if (entries.length === 0) return "—";
+    return entries.map(([label, val]) => `${label}:${val}`).join(" ");
+  }
+  return String(value);
+}
+
+function formatItemValue(value: unknown): string {
+  if (value == null || value === "") return "—";
+  return String(value);
 }
 
 function submissionStatusLabel(status: "not_started" | "in_progress" | "submitted") {

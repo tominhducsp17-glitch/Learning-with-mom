@@ -512,7 +512,13 @@ class DraftStore:
                     (assignment["id"], student_id),
                 ).fetchone()
         exam = json.loads(assignment["exam_json"])
-        if not include_answers:
+        student_can_see_answers = (
+            student_id
+            and assignment["show_answers"]
+            and submission
+            and submission["status"] == "submitted"
+        )
+        if not include_answers and not student_can_see_answers:
             exam = exam_for_student(exam)
         payload = {
             "id": assignment["id"],

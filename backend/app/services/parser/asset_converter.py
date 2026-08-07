@@ -36,11 +36,15 @@ def convert_vector_asset(source_path: Path, asset_id: str) -> ConversionResult:
             timeout=30,
             check=False,
         )
-        if result.returncode == 0 and output_path.exists():
+        if output_path.exists() and output_path.stat().st_size > 0:
+            message = "Converted vector asset with ImageMagick."
+            if result.returncode != 0:
+                stderr = (result.stderr or result.stdout or "").strip()
+                message = f"Converted vector asset with ImageMagick warnings: {stderr}"
             return ConversionResult(
                 status="converted",
                 render_path=output_path,
-                message="Converted vector asset with ImageMagick.",
+                message=message,
                 tool=magick_binary,
             )
         stderr = (result.stderr or result.stdout or "").strip()

@@ -4,6 +4,9 @@ import html
 import json
 import posixpath
 import re
+import shutil
+import subprocess
+import tempfile
 import unicodedata
 import zipfile
 from dataclasses import dataclass, field
@@ -39,6 +42,7 @@ class AssetContext:
     zip_file: zipfile.ZipFile
     rels: dict[str, str]
     output_dir: Path
+    libreoffice_renders: list[dict[str, Any]] = field(default_factory=list)
     counter: int = 0
     assets: list[dict[str, Any]] = field(default_factory=list)
     assets_by_relationship: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -85,20 +89,28 @@ class AssetContext:
                 status = "ready"
                 render_path = original_path
             elif ext in VECTOR_EXTENSIONS:
-                conversion = convert_vector_asset(original_path, asset_id) if self.convert_images else None
-                if conversion and conversion.status == "converted" and conversion.render_path:
+                libreoffice_render = self._libreoffice_render_for_asset(asset_id) if self.convert_images else None
+                conversion = None
+                if libreoffice_render:
+                    render_path = self.output_dir / f"{asset_id}{libreoffice_render['extension']}"
+                    render_path.write_bytes(libreoffice_render["bytes"])
+                    status = "converted"
+                else:
+                    conversion = convert_vector_asset(original_path, asset_id) if self.convert_images else None
+                if status != "converted" and conversion and conversion.status == "converted" and conversion.render_path:
                     status = "converted"
                     render_path = conversion.render_path
                 else:
-                    status = "placeholder"
-                    self.unconverted_vector_count += 1
-                    render_path = self.output_dir / f"{asset_id}.placeholder.svg"
-                    _write_placeholder_svg(render_path, asset_id, ext)
-                    reason = conversion.message if conversion else "Image conversion was not requested."
-                    warning = (
-                        f"{asset_id} references {ext.upper()} media. Original file was copied, "
-                        f"but no browser-friendly image was produced. {reason}"
-                    )
+                    if status != "converted":
+                        status = "placeholder"
+                        self.unconverted_vector_count += 1
+                        render_path = self.output_dir / f"{asset_id}.placeholder.svg"
+                        _write_placeholder_svg(render_path, asset_id, ext)
+                        reason = conversion.message if conversion else "Image conversion was not requested."
+                        warning = (
+                            f"{asset_id} references {ext.upper()} media. Original file was copied, "
+                            f"but no browser-friendly image was produced. {reason}"
+                        )
             else:
                 status = "placeholder"
                 render_path = self.output_dir / f"{asset_id}.placeholder.svg"
@@ -125,6 +137,15 @@ class AssetContext:
             self.assets_by_relationship[relationship_id] = asset
         return asset
 
+    def _libreoffice_render_for_asset(self, asset_id: str) -> dict[str, Any] | None:
+        match = re.match(r"img_(\d+)$", asset_id)
+        if not match:
+            return None
+        index = int(match.group(1)) - 1
+        if index < 0 or index >= len(self.libreoffice_renders):
+            return None
+        return self.libreoffice_renders[index]
+
 
 def parse_docx_exam(
     docx_path: str | Path,
@@ -139,7 +160,14 @@ def parse_docx_exam(
 
     with zipfile.ZipFile(source_path) as docx_zip:
         rels = _read_relationships(docx_zip)
-        context = AssetContext(docx_zip, rels, output_dir, convert_images=convert_images)
+        libreoffice_renders = _render_docx_images_with_libreoffice(source_path) if convert_images else []
+        context = AssetContext(
+            docx_zip,
+            rels,
+            output_dir,
+            libreoffice_renders=libreoffice_renders,
+            convert_images=convert_images,
+        )
         document = ET.fromstring(docx_zip.read("word/document.xml"))
         body = document.find("w:body", NS)
         if body is None:
@@ -150,6 +178,8 @@ def parse_docx_exam(
     title = _extract_title(body_items)
     answer_keys = _parse_answer_tables([item.rows for item in body_items if item.kind == "table"])
     sections = _parse_sections(body_items, answer_keys)
+    _attach_markup(sections)
+    assets_by_id = _asset_map(context.assets, sections)
     warnings = _validate_exam(sections, answer_keys)
 
     if context.unconverted_vector_count:
@@ -174,6 +204,7 @@ def parse_docx_exam(
         "sections": sections,
         "answer_keys": answer_keys,
         "assets": context.assets,
+        "assets_by_id": assets_by_id,
         "warnings": warnings,
     }
 
@@ -189,6 +220,105 @@ def write_parsed_exam(
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8")
     return parsed
+
+
+def _render_docx_images_with_libreoffice(docx_path: Path) -> list[dict[str, Any]]:
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        return []
+
+    with tempfile.TemporaryDirectory(prefix="mathexam-lo-") as tmp:
+        tmp_path = Path(tmp)
+        input_path = tmp_path / "source.docx"
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        shutil.copy2(docx_path, input_path)
+        try:
+            result = subprocess.run(
+                [
+                    soffice,
+                    "--headless",
+                    "--convert-to",
+                    "html",
+                    "--outdir",
+                    str(output_dir),
+                    str(input_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=90,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        if result.returncode != 0:
+            return []
+
+        html_files = sorted(output_dir.glob("*.html"))
+        if not html_files:
+            return []
+        html_text = html_files[0].read_text(encoding="utf-8", errors="ignore")
+        image_sources = re.findall(r"<img[^>]+src=['\"]([^'\"]+)['\"]", html_text, flags=re.I)
+        unique_sources: list[str] = []
+        seen: set[str] = set()
+        for source in image_sources:
+            source = html.unescape(source)
+            if source in seen:
+                continue
+            seen.add(source)
+            unique_sources.append(source)
+
+        rendered: list[dict[str, Any]] = []
+        for source in unique_sources:
+            image_path = (output_dir / source).resolve()
+            try:
+                image_path.relative_to(output_dir.resolve())
+            except ValueError:
+                continue
+            if not image_path.exists() or not image_path.is_file():
+                continue
+            suffix = image_path.suffix.lower()
+            if suffix not in DISPLAYABLE_EXTENSIONS:
+                continue
+            image_bytes, render_suffix = _normalize_libreoffice_render(image_path)
+            rendered.append(
+                {
+                    "extension": render_suffix,
+                    "bytes": image_bytes,
+                    "source": source,
+                    "tool": "libreoffice",
+                }
+            )
+        return rendered
+
+
+def _normalize_libreoffice_render(image_path: Path) -> tuple[bytes, str]:
+    """Convert LibreOffice-rendered image to high-DPI PNG.
+
+    Upscales 3× using ImageMagick Point (nearest-neighbor) filter so math
+    formula edges stay sharp.  The JSON metadata still records the original
+    Word display size; the browser down-scales the larger image → crisp
+    rendering on Retina / high-DPI screens.
+    """
+    magick = shutil.which("convert") or shutil.which("magick")
+    if not magick:
+        return image_path.read_bytes(), image_path.suffix.lower()
+
+    png_path = image_path.with_suffix(".png")
+    try:
+        subprocess.run(
+            [magick, str(image_path), "-filter", "Point", "-resize", "300%", str(png_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    if png_path.exists() and png_path.stat().st_size > 0:
+        return png_path.read_bytes(), ".png"
+    return image_path.read_bytes(), image_path.suffix.lower()
 
 
 def _read_relationships(docx_zip: zipfile.ZipFile) -> dict[str, str]:
@@ -591,6 +721,71 @@ def _validate_exam(sections: list[dict[str, Any]], answer_keys: dict[str, Any]) 
                 }
             )
     return warnings
+
+
+def _attach_markup(sections: list[dict[str, Any]]) -> None:
+    for section in sections:
+        for question in section["questions"]:
+            question["prompt_markup"] = _blocks_to_markup(question.get("prompt_blocks", []))
+            if "options" in question:
+                question["options_markup"] = {
+                    label: _blocks_to_markup(blocks)
+                    for label, blocks in question["options"].items()
+                }
+            if "statements" in question:
+                question["statements_markup"] = {
+                    label: _blocks_to_markup(blocks)
+                    for label, blocks in question["statements"].items()
+                }
+
+
+def _blocks_to_markup(blocks: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for block in blocks:
+        if block.get("type") == "image":
+            asset_id = block.get("asset_id", "")
+            if asset_id:
+                parts.append(f"[img:${asset_id}$]")
+        elif block.get("type") == "text":
+            parts.append(_escape_markup_text(block.get("text", "")))
+    return "".join(parts)
+
+
+def _escape_markup_text(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("[", "\\[")
+
+
+def _asset_map(assets: list[dict[str, Any]], sections: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    mapped = {asset["asset_id"]: dict(asset) for asset in assets if asset.get("asset_id")}
+    for block in _iter_image_blocks(sections):
+        asset_id = block.get("asset_id")
+        if not asset_id:
+            continue
+        asset = mapped.setdefault(asset_id, {"asset_id": asset_id})
+        occurrence = {
+            key: block[key]
+            for key in ("extent_emu", "display_width_px", "display_height_px")
+            if key in block
+        }
+        if occurrence:
+            asset.setdefault("occurrences", []).append(occurrence)
+            asset.setdefault("extent_emu", block.get("extent_emu"))
+            asset.setdefault("display_width_px", block.get("display_width_px"))
+            asset.setdefault("display_height_px", block.get("display_height_px"))
+    return mapped
+
+
+def _iter_image_blocks(sections: list[dict[str, Any]]):
+    for section in sections:
+        for question in section.get("questions", []):
+            for block in question.get("prompt_blocks", []):
+                if block.get("type") == "image":
+                    yield block
+            for nested_key in ("options", "statements"):
+                for blocks in question.get(nested_key, {}).values():
+                    for block in blocks:
+                        if block.get("type") == "image":
+                            yield block
 
 
 def _split_labeled_blocks(

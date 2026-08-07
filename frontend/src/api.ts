@@ -161,3 +161,7 @@ export async function getAssignmentAnalytics(code: string): Promise<AssignmentAn
 export function assignmentCsvUrl(code: string): string {
   return `/api/assignments/${encodeURIComponent(code)}/export.csv`;
 }
+
+export function assignmentXlsxUrl(code: string): string {
+  return `/api/assignments/${encodeURIComponent(code)}/export.xlsx`;
+}

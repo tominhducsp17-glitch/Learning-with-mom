@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import csv
 import io
+import os
+import shutil
+import subprocess
 import zipfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -64,8 +68,23 @@ def initialize_storage() -> None:
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "env": settings.app_env}
+def health() -> dict[str, Any]:
+    storage_ok = _path_is_writable(settings.storage_root)
+    database_parent_ok = _path_is_writable(settings.database_path.parent)
+    converter = _converter_status()
+    return {
+        "status": "ok" if storage_ok and database_parent_ok else "degraded",
+        "env": settings.app_env,
+        "storage": {
+            "path": str(settings.storage_root),
+            "writable": storage_ok,
+        },
+        "database": {
+            "path": str(settings.database_path),
+            "parent_writable": database_parent_ok,
+        },
+        "converter": converter,
+    }
 
 
 @app.get("/api/overview")
@@ -246,36 +265,25 @@ def export_assignment_csv(code: str) -> Response:
         raise HTTPException(status_code=404, detail="Không tìm thấy bài được giao.") from exc
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow([
-        "student_code",
-        "student_name",
-        "status",
-        "total_score",
-        "max_score",
-        "part_i",
-        "part_ii",
-        "part_iii",
-        "submitted_at",
-    ])
-    for submission in results["submissions"]:
-        grade = submission.get("grading_detail") or {}
-        by_section = grade.get("by_section", {})
-        student = submission.get("student") or {}
-        writer.writerow([
-            student.get("student_code", ""),
-            student.get("name", ""),
-            submission.get("status", ""),
-            submission.get("total_score") or "",
-            submission.get("max_score") or "",
-            _section_csv_score(by_section.get("single_choice")),
-            _section_csv_score(by_section.get("true_false")),
-            _section_csv_score(by_section.get("short_answer")),
-            submission.get("submitted_at") or "",
-        ])
+    writer.writerows(_assignment_score_rows(results))
     filename = f"{code}.csv"
     return Response(
         content=output.getvalue(),
         media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/assignments/{code}/export.xlsx")
+def export_assignment_xlsx(code: str) -> Response:
+    try:
+        results = store.get_assignment_results(code)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài được giao.") from exc
+    filename = f"{code}.xlsx"
+    return Response(
+        content=_build_xlsx(_assignment_score_rows(results)),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -298,6 +306,8 @@ def _draft_for_client(draft: dict[str, Any]) -> dict[str, Any]:
 
     for asset in exam.get("assets", []):
         _replace_asset_paths(asset, draft_id)
+    for asset in exam.get("assets_by_id", {}).values():
+        _replace_asset_paths(asset, draft_id)
     for section in exam.get("sections", []):
         for question in section.get("questions", []):
             _replace_paths_in_value(question, draft_id)
@@ -309,6 +319,8 @@ def _assignment_for_client(assignment: dict[str, Any]) -> dict[str, Any]:
     draft_id = payload["draft_id"]
     exam = payload["exam"]
     for asset in exam.get("assets", []):
+        _replace_asset_paths(asset, draft_id)
+    for asset in exam.get("assets_by_id", {}).values():
         _replace_asset_paths(asset, draft_id)
     for section in exam.get("sections", []):
         for question in section.get("questions", []):
@@ -339,6 +351,243 @@ def _section_csv_score(section: dict[str, Any] | None) -> str:
     if not section:
         return ""
     return f"{section.get('score', 0)}/{section.get('max_score', 0)}"
+
+
+def _path_is_writable(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _converter_status() -> dict[str, Any]:
+    magick = _magick_status()
+    magick["libreoffice"] = _libreoffice_status()
+    magick["custom_font_dir"] = _custom_font_dir_status()
+    return magick
+
+
+def _magick_status() -> dict[str, Any]:
+    binary_name = os.getenv("MAGICK_BINARY", "magick")
+    binary_path = shutil.which(binary_name)
+    if not binary_path:
+        return {
+            "available": False,
+            "binary": binary_name,
+            "path": None,
+            "wmf": False,
+            "emf": False,
+        }
+    try:
+        version = subprocess.run(
+            [binary_path, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        formats = subprocess.run(
+            [binary_path, "-list", "format"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {
+            "available": True,
+            "binary": binary_name,
+            "path": binary_path,
+            "wmf": False,
+            "emf": False,
+            "version": "",
+        }
+
+    format_output = formats.stdout.upper()
+    return {
+        "available": True,
+        "binary": binary_name,
+        "path": binary_path,
+        "wmf": "WMF" in format_output,
+        "emf": "EMF" in format_output,
+        "version": version.stdout.splitlines()[0] if version.stdout else "",
+    }
+
+
+def _libreoffice_status() -> dict[str, Any]:
+    binary_path = shutil.which("soffice") or shutil.which("libreoffice")
+    if not binary_path:
+        return {"available": False, "path": None, "version": ""}
+    try:
+        version = subprocess.run(
+            [binary_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {"available": True, "path": binary_path, "version": ""}
+    return {
+        "available": True,
+        "path": binary_path,
+        "version": version.stdout.strip(),
+    }
+
+
+def _custom_font_dir_status() -> dict[str, Any]:
+    font_dir = Path(os.getenv("MATH_EXAM_CUSTOM_FONT_DIR", "/usr/local/share/fonts/mathexam"))
+    files: list[Path] = []
+    if font_dir.exists():
+        files = [
+            path
+            for path in font_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in {".ttf", ".otf", ".ttc"}
+        ]
+    return {
+        "path": str(font_dir),
+        "exists": font_dir.exists(),
+        "font_count": len(files),
+    }
+
+
+def _assignment_score_rows(results: dict[str, Any]) -> list[list[Any]]:
+    rows: list[list[Any]] = [[
+        "student_code",
+        "student_name",
+        "status",
+        "total_score",
+        "max_score",
+        "part_i",
+        "part_ii",
+        "part_iii",
+        "submitted_at",
+    ]]
+    for submission in results["submissions"]:
+        grade = submission.get("grading_detail") or {}
+        by_section = grade.get("by_section", {})
+        student = submission.get("student") or {}
+        rows.append([
+            student.get("student_code", ""),
+            student.get("name", ""),
+            submission.get("status", ""),
+            submission.get("total_score") or "",
+            submission.get("max_score") or "",
+            _section_csv_score(by_section.get("single_choice")),
+            _section_csv_score(by_section.get("true_false")),
+            _section_csv_score(by_section.get("short_answer")),
+            submission.get("submitted_at") or "",
+        ])
+    return rows
+
+
+def _build_xlsx(rows: list[list[Any]]) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", _xlsx_content_types())
+        archive.writestr("_rels/.rels", _xlsx_root_rels())
+        archive.writestr("xl/workbook.xml", _xlsx_workbook())
+        archive.writestr("xl/_rels/workbook.xml.rels", _xlsx_workbook_rels())
+        archive.writestr("xl/styles.xml", _xlsx_styles())
+        archive.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet(rows))
+    return output.getvalue()
+
+
+def _xlsx_sheet(rows: list[list[Any]]) -> str:
+    row_xml = []
+    for row_index, row in enumerate(rows, start=1):
+        cells = []
+        for column_index, value in enumerate(row, start=1):
+            cell_ref = f"{_xlsx_column_name(column_index)}{row_index}"
+            cell_style = ' s="1"' if row_index == 1 else ""
+            cells.append(
+                f'<c r="{cell_ref}" t="inlineStr"{cell_style}>'
+                f"<is><t>{escape(str(value))}</t></is></c>"
+            )
+        row_xml.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<sheetViews><sheetView workbookViewId="0"/></sheetViews>'
+        '<sheetFormatPr defaultRowHeight="18"/>'
+        '<cols>'
+        '<col min="1" max="2" width="22" customWidth="1"/>'
+        '<col min="3" max="9" width="16" customWidth="1"/>'
+        '</cols>'
+        f'<sheetData>{"".join(row_xml)}</sheetData>'
+        "</worksheet>"
+    )
+
+
+def _xlsx_column_name(index: int) -> str:
+    name = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def _xlsx_content_types() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        "</Types>"
+    )
+
+
+def _xlsx_root_rels() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        "</Relationships>"
+    )
+
+
+def _xlsx_workbook() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<sheets>"
+        '<sheet name="Bang diem" sheetId="1" r:id="rId1"/>'
+        "</sheets>"
+        "</workbook>"
+    )
+
+
+def _xlsx_workbook_rels() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+        "</Relationships>"
+    )
+
+
+def _xlsx_styles() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+        '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+        '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/></cellXfs>'
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+        "</styleSheet>"
+    )
 
 
 if settings.frontend_dist.is_dir():

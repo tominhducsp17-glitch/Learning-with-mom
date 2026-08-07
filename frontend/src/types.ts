@@ -20,11 +20,36 @@ export type ImageBlock = {
 
 export type ContentBlock = TextBlock | ImageBlock;
 
+export type AssetMapEntry = Record<string, unknown> & {
+  asset_id: string;
+  render_path?: string;
+  original_path?: string;
+  extension?: string;
+  status?: string;
+  extent_emu?: {
+    cx: number;
+    cy: number;
+  };
+  display_width_px?: number;
+  display_height_px?: number;
+  occurrences?: Array<{
+    extent_emu?: {
+      cx: number;
+      cy: number;
+    };
+    display_width_px?: number;
+    display_height_px?: number;
+  }>;
+};
+
 export type Question = {
   number: number;
   prompt_blocks: ContentBlock[];
+  prompt_markup?: string;
   options?: Record<string, ContentBlock[]>;
+  options_markup?: Record<string, string>;
   statements?: Record<string, ContentBlock[]>;
+  statements_markup?: Record<string, string>;
   correct_answer?: string | Record<string, string> | null;
   score: number;
 };
@@ -53,6 +78,7 @@ export type ParsedExam = {
   sections: ExamSection[];
   answer_keys: Record<string, unknown>;
   assets: Array<Record<string, unknown>>;
+  assets_by_id?: Record<string, AssetMapEntry>;
   warnings: ParserWarning[];
 };
 

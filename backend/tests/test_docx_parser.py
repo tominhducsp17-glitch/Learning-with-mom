@@ -72,6 +72,22 @@ class DocxParserGoldenTest(unittest.TestCase):
         self.assertAlmostEqual(152, second["display_width_px"], delta=0.2)
         self.assertAlmostEqual(41, second["display_height_px"], delta=0.2)
 
+    def test_markup_tokens_and_asset_map_are_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parsed = parse_docx_exam(self.sample_path, assets_dir=Path(tmp) / "assets")
+
+        first_question = parsed["sections"][0]["questions"][0]
+        self.assertIn("[img:$img_0001$]", first_question["prompt_markup"])
+        self.assertIn("[img:$img_0002$]", first_question["prompt_markup"])
+        self.assertEqual("[img:$img_0004$].", first_question["options_markup"]["A"])
+
+        assets_by_id = parsed["assets_by_id"]
+        self.assertIn("img_0001", assets_by_id)
+        self.assertEqual({"cx": 352425, "cy": 200025}, assets_by_id["img_0001"]["extent_emu"])
+        self.assertAlmostEqual(37, assets_by_id["img_0001"]["display_width_px"], delta=0.2)
+        self.assertGreaterEqual(len(assets_by_id["img_0001"]["occurrences"]), 1)
+        self.assertEqual({"cx": 352425, "cy": 200025}, assets_by_id["img_0001"]["occurrences"][0]["extent_emu"])
+
     def test_question_shapes_are_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             parsed = parse_docx_exam(self.sample_path, assets_dir=Path(tmp) / "assets")
@@ -109,6 +125,69 @@ class DocxParserGoldenTest(unittest.TestCase):
         self.assertIn("<img", html)
         self.assertIn(".placeholder.svg", html)
         self.assertNotIn("file:///", html)
+
+    def test_converted_images_are_high_dpi(self) -> None:
+        """When convert_images=True (LibreOffice + ImageMagick available),
+        render_path should be .png, display sizes unchanged, and actual
+        PNG pixel dimensions should exceed display_width_px (3× upscale)."""
+        import shutil
+
+        has_lo = bool(shutil.which("soffice") or shutil.which("libreoffice"))
+        has_magick = bool(shutil.which("convert") or shutil.which("magick"))
+        if not (has_lo and has_magick):
+            self.skipTest("LibreOffice and/or ImageMagick not available — skipping high-DPI test")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp) / "assets"
+            parsed = parse_docx_exam(self.sample_path, assets_dir=tmp_path, convert_images=True)
+
+            image_blocks = _image_blocks(parsed)
+            self.assertGreater(len(image_blocks), 0, "Expected at least one image block")
+
+            first = image_blocks[0]
+            second = image_blocks[1]
+
+            # render_path should be .png
+            self.assertTrue(first["render_path"].endswith(".png"), f"Expected .png, got {first['render_path']}")
+            self.assertTrue(second["render_path"].endswith(".png"), f"Expected .png, got {second['render_path']}")
+
+            # display sizes should match Word originals
+            self.assertAlmostEqual(37, first["display_width_px"], delta=0.2)
+            self.assertAlmostEqual(21, first["display_height_px"], delta=0.2)
+            self.assertAlmostEqual(152, second["display_width_px"], delta=0.2)
+            self.assertAlmostEqual(41, second["display_height_px"], delta=0.2)
+
+            # Actual PNG pixel dimensions should exceed display size (3× upscale)
+            try:
+                import struct
+
+                def _png_dimensions(png_path: Path) -> tuple[int, int]:
+                    """Read width and height from PNG IHDR chunk."""
+                    data = png_path.read_bytes()
+                    # PNG signature (8 bytes) + IHDR length (4 bytes) + 'IHDR' (4 bytes) + width (4) + height (4)
+                    if data[:8] != b"\x89PNG\r\n\x1a\n":
+                        raise ValueError("Not a PNG file")
+                    w, h = struct.unpack(">II", data[16:24])
+                    return w, h
+
+                first_png = Path(first["render_path"])
+                if not first_png.is_absolute():
+                    first_png = Path.cwd() / first_png
+                second_png = Path(second["render_path"])
+                if not second_png.is_absolute():
+                    second_png = Path.cwd() / second_png
+
+                if first_png.exists():
+                    w1, h1 = _png_dimensions(first_png)
+                    self.assertGreater(w1, first["display_width_px"],
+                                       f"PNG pixel width {w1} should exceed display_width_px {first['display_width_px']}")
+
+                if second_png.exists():
+                    w2, h2 = _png_dimensions(second_png)
+                    self.assertGreater(w2, second["display_width_px"],
+                                       f"PNG pixel width {w2} should exceed display_width_px {second['display_width_px']}")
+            except ImportError:
+                pass  # struct should always be available, but just in case
 
 
 def _image_blocks(parsed: dict) -> list[dict]:
