@@ -112,7 +112,8 @@ def health() -> dict[str, Any]:
             "auto_ocr_max_workers": settings.auto_ocr_max_workers,
             "auto_ocr_batch_size": settings.auto_ocr_batch_size,
             "openai_configured": bool(settings.openai_api_key.strip()),
-            "gemini_configured": bool(settings.gemini_api_key.strip()),
+            "gemini_configured": bool(settings.gemini_api_keys),
+            "gemini_key_count": len(settings.gemini_api_keys),
             "model": settings.gemini_model if settings.ai_provider == "gemini" else settings.openai_model,
         },
         "converter": converter,
@@ -229,6 +230,7 @@ def suggest_asset_latex(draft_id: str, payload: OcrAssetPayload) -> dict[str, An
             openai_api_key=settings.openai_api_key,
             openai_model=settings.openai_model,
             gemini_api_key=settings.gemini_api_key,
+            gemini_api_keys=settings.gemini_api_keys,
             gemini_model=settings.gemini_model,
         )
     except ValueError as exc:
@@ -359,6 +361,7 @@ def student_assignment_chat(code: str, payload: StudentChatPayload) -> dict[str,
             openai_api_key=settings.openai_api_key,
             openai_model=settings.openai_model,
             gemini_api_key=settings.gemini_api_key,
+            gemini_api_keys=settings.gemini_api_keys,
             gemini_model=settings.gemini_model,
         )
     except ValueError as exc:
@@ -628,6 +631,7 @@ def _auto_ocr_exam_assets(draft_id: str, exam: dict[str, Any]) -> None:
                     batch,
                     settings.ai_provider,
                     gemini_api_key=settings.gemini_api_key,
+                    gemini_api_keys=settings.gemini_api_keys,
                     gemini_model=settings.gemini_model,
                 )
             except (ValueError, RuntimeError) as exc:
@@ -665,6 +669,7 @@ def _auto_ocr_exam_assets(draft_id: str, exam: dict[str, Any]) -> None:
                     openai_api_key=settings.openai_api_key,
                     openai_model=settings.openai_model,
                     gemini_api_key=settings.gemini_api_key,
+                    gemini_api_keys=settings.gemini_api_keys,
                     gemini_model=settings.gemini_model,
                 )
             except (ValueError, FileNotFoundError, RuntimeError) as exc:

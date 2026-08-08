@@ -106,6 +106,8 @@ nano .env.production
 ```env
 AI_PROVIDER=gemini
 GEMINI_API_KEY=your_real_key_here
+# Optional fallback keys, separated by comma.
+GEMINI_API_KEYS=
 GEMINI_MODEL=gemini-3.1-flash-lite
 AUTO_OCR_ON_IMPORT=true
 ```

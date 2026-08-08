@@ -26,6 +26,7 @@ def ask_chatbot(
     openai_api_key: str = "",
     openai_model: str = "gpt-5-mini",
     gemini_api_key: str = "",
+    gemini_api_keys: tuple[str, ...] | list[str] = (),
     gemini_model: str = "gemini-3.1-flash-lite",
 ) -> str:
     cleaned_message = " ".join(message.strip().split())
@@ -44,11 +45,11 @@ def ask_chatbot(
     ]
 
     if provider == "gemini":
-        return _ask_gemini(
+        return _ask_gemini_fallback(
             message=cleaned_message,
             context=context,
             history=safe_history,
-            api_key=gemini_api_key,
+            api_keys=_gemini_key_chain(gemini_api_key, gemini_api_keys),
             model=gemini_model,
         )
     if provider == "openai":
@@ -121,6 +122,33 @@ def _ask_gemini(
     return text
 
 
+def _ask_gemini_fallback(
+    *,
+    message: str,
+    context: str,
+    history: list[dict[str, str]],
+    api_keys: tuple[str, ...],
+    model: str,
+) -> str:
+    if not api_keys:
+        raise ValueError("GEMINI_API_KEY chua duoc cau hinh.")
+    errors: list[str] = []
+    for api_key in api_keys:
+        try:
+            return _ask_gemini(
+                message=message,
+                context=context,
+                history=history,
+                api_key=api_key,
+                model=model,
+            )
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            if not _is_retryable_ai_error(exc):
+                raise
+    raise RuntimeError(f"Tat ca Gemini chatbot key deu loi tam thoi/quota. Loi cuoi: {errors[-1]}")
+
+
 def _ask_openai(
     *,
     message: str,
@@ -170,6 +198,20 @@ def _history_text(history: list[dict[str, str]]) -> str:
     if not history:
         return "(chua co)"
     return "\n".join(f"{item['role']}: {item['content']}" for item in history)
+
+
+def _gemini_key_chain(primary_key: str, extra_keys: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    keys: list[str] = []
+    for key in [primary_key, *extra_keys]:
+        cleaned = str(key).strip()
+        if cleaned and cleaned not in keys:
+            keys.append(cleaned)
+    return tuple(keys)
+
+
+def _is_retryable_ai_error(exc: RuntimeError) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in (" 429", "quota", "rate", "resource_exhausted", " 503", "unavailable"))
 
 
 def _extract_gemini_text(data: dict[str, Any]) -> str:

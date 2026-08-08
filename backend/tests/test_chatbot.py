@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.app.main import _markup_to_chat_text
-from backend.app.services.chatbot import _extract_gemini_text, _extract_openai_text
+from backend.app.services.chatbot import _extract_gemini_text, _extract_openai_text, _gemini_key_chain
 
 
 class ChatbotHelpersTest(unittest.TestCase):
@@ -26,6 +26,9 @@ class ChatbotHelpersTest(unittest.TestCase):
 
     def test_extract_openai_text_from_output_text(self) -> None:
         self.assertEqual("OK", _extract_openai_text({"output_text": "OK"}))
+
+    def test_gemini_key_chain_dedupes_primary_and_fallback_keys(self) -> None:
+        self.assertEqual(("main", "backup"), _gemini_key_chain("main", ["backup", "main"]))
 
 
 if __name__ == "__main__":

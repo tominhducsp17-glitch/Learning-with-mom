@@ -64,7 +64,14 @@ class Settings:
     openai_api_key: str
     openai_model: str
     gemini_api_key: str
+    gemini_api_keys: tuple[str, ...]
     gemini_model: str
+
+
+def _list_from_env(name: str) -> tuple[str, ...]:
+    raw_value = os.getenv(name, "")
+    values = [item.strip() for item in raw_value.replace("\n", ",").split(",")]
+    return tuple(item for item in values if item)
 
 
 def get_settings() -> Settings:
@@ -72,6 +79,13 @@ def get_settings() -> Settings:
     storage_root = _path_from_env("MATH_EXAM_STORAGE_ROOT", "storage")
     database_path = _path_from_env("MATH_EXAM_DATABASE_PATH", "storage/math_exam.sqlite3")
     max_upload_mb = _int_from_env("MAX_UPLOAD_MB", 25)
+    gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    gemini_api_keys = []
+    if gemini_api_key:
+        gemini_api_keys.append(gemini_api_key)
+    for key in _list_from_env("GEMINI_API_KEYS"):
+        if key not in gemini_api_keys:
+            gemini_api_keys.append(key)
     return Settings(
         app_env=os.getenv("APP_ENV", "local"),
         ai_provider=os.getenv("AI_PROVIDER", "openai").strip().lower(),
@@ -86,6 +100,7 @@ def get_settings() -> Settings:
         max_upload_bytes=max_upload_mb * 1024 * 1024,
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
-        gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
+        gemini_api_key=gemini_api_key,
+        gemini_api_keys=tuple(gemini_api_keys),
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
     )

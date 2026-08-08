@@ -8,7 +8,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.app.services.ocr import _extract_gemini_text, _extract_output_text, _parse_batch_suggestions, _parse_suggestion
+from backend.app.services.ocr import (
+    _extract_gemini_text,
+    _extract_output_text,
+    _gemini_key_chain,
+    _parse_batch_suggestions,
+    _parse_suggestion,
+)
 
 
 class OcrSuggestionParsingTest(unittest.TestCase):
@@ -82,6 +88,9 @@ class OcrSuggestionParsingTest(unittest.TestCase):
         self.assertEqual("\\sqrt{x}", suggestion["latex"])
         self.assertLess(suggestion["confidence"], 0.5)
         self.assertTrue(suggestion["needs_review"])
+
+    def test_gemini_key_chain_dedupes_primary_and_fallback_keys(self) -> None:
+        self.assertEqual(("main", "backup"), _gemini_key_chain(" main ", ("backup", "main", "")))
 
 
 if __name__ == "__main__":

@@ -49,6 +49,9 @@ AUTO_OCR_BATCH_SIZE=20
 
 AI_PROVIDER=gemini
 GEMINI_API_KEY=dien_key_that_o_day
+# Tùy chọn: thêm key dự phòng, cách nhau bằng dấu phẩy.
+# App sẽ thử GEMINI_API_KEY trước, nếu gặp quota/rate-limit tạm thời thì thử các key dưới đây.
+GEMINI_API_KEYS=key_du_phong_1,key_du_phong_2
 GEMINI_MODEL=gemini-3.1-flash-lite
 
 OPENAI_API_KEY=

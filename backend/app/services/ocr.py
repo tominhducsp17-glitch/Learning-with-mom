@@ -40,6 +40,7 @@ def suggest_latex_for_image(
     openai_api_key: str = "",
     openai_model: str = "gpt-5-mini",
     gemini_api_key: str = "",
+    gemini_api_keys: tuple[str, ...] | list[str] = (),
     gemini_model: str = "gemini-3.1-flash-lite",
 ) -> dict[str, Any]:
     if not image_path.is_file():
@@ -53,7 +54,12 @@ def suggest_latex_for_image(
     image_base64 = base64.b64encode(image_bytes).decode("ascii")
 
     if provider == "gemini":
-        return _suggest_latex_with_gemini(image_base64, mime_type, gemini_api_key, gemini_model)
+        return _suggest_latex_with_gemini_fallback(
+            image_base64,
+            mime_type,
+            _gemini_key_chain(gemini_api_key, gemini_api_keys),
+            gemini_model,
+        )
     if provider == "openai":
         return _suggest_latex_with_openai(image_base64, mime_type, openai_api_key, openai_model)
     raise ValueError(f"AI_PROVIDER khong ho tro: {provider}. Hay dung openai hoac gemini.")
@@ -66,6 +72,7 @@ def suggest_latex_for_image_batch(
     openai_api_key: str = "",
     openai_model: str = "gpt-5-mini",
     gemini_api_key: str = "",
+    gemini_api_keys: tuple[str, ...] | list[str] = (),
     gemini_model: str = "gemini-3.1-flash-lite",
 ) -> dict[str, dict[str, Any]]:
     if not images:
@@ -78,11 +85,16 @@ def suggest_latex_for_image_batch(
                 openai_api_key=openai_api_key,
                 openai_model=openai_model,
                 gemini_api_key=gemini_api_key,
+                gemini_api_keys=gemini_api_keys,
                 gemini_model=gemini_model,
             )
             for asset_id, image_path in images
         }
-    return _suggest_latex_batch_with_gemini(images, gemini_api_key, gemini_model)
+    return _suggest_latex_batch_with_gemini_fallback(
+        images,
+        _gemini_key_chain(gemini_api_key, gemini_api_keys),
+        gemini_model,
+    )
 
 
 def math_replacement_token(latex: str) -> str:
@@ -187,6 +199,27 @@ def _suggest_latex_with_gemini(image_base64: str, mime_type: str, api_key: str, 
     return suggestion
 
 
+def _suggest_latex_with_gemini_fallback(
+    image_base64: str,
+    mime_type: str,
+    api_keys: tuple[str, ...],
+    model: str,
+) -> dict[str, Any]:
+    if not api_keys:
+        raise ValueError("GEMINI_API_KEY chua duoc cau hinh.")
+    errors: list[str] = []
+    for index, api_key in enumerate(api_keys, start=1):
+        try:
+            result = _suggest_latex_with_gemini(image_base64, mime_type, api_key, model)
+            result["api_key_index"] = index
+            return result
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            if not _is_retryable_ai_error(exc):
+                raise
+    raise RuntimeError(f"Tat ca Gemini OCR key deu loi tam thoi/quota. Loi cuoi: {errors[-1]}")
+
+
 def _suggest_latex_batch_with_gemini(
     images: list[tuple[str, Path]],
     api_key: str,
@@ -250,6 +283,41 @@ def _suggest_latex_batch_with_gemini(
 
     raw_text = _extract_gemini_text(data)
     return _parse_batch_suggestions(raw_text)
+
+
+def _suggest_latex_batch_with_gemini_fallback(
+    images: list[tuple[str, Path]],
+    api_keys: tuple[str, ...],
+    model: str,
+) -> dict[str, dict[str, Any]]:
+    if not api_keys:
+        raise ValueError("GEMINI_API_KEY chua duoc cau hinh.")
+    errors: list[str] = []
+    for index, api_key in enumerate(api_keys, start=1):
+        try:
+            results = _suggest_latex_batch_with_gemini(images, api_key, model)
+            for suggestion in results.values():
+                suggestion["api_key_index"] = index
+            return results
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            if not _is_retryable_ai_error(exc):
+                raise
+    raise RuntimeError(f"Tat ca Gemini batch OCR key deu loi tam thoi/quota. Loi cuoi: {errors[-1]}")
+
+
+def _gemini_key_chain(primary_key: str, extra_keys: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    keys: list[str] = []
+    for key in [primary_key, *extra_keys]:
+        cleaned = str(key).strip()
+        if cleaned and cleaned not in keys:
+            keys.append(cleaned)
+    return tuple(keys)
+
+
+def _is_retryable_ai_error(exc: RuntimeError) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in (" 429", "quota", "rate", "resource_exhausted", " 503", "unavailable"))
 
 
 def _extract_gemini_text(data: dict[str, Any]) -> str:
