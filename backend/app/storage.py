@@ -209,6 +209,54 @@ class DraftStore:
             raise KeyError(draft_id)
         return self.get(draft_id)
 
+    def sync_published_exams_for_draft(self, draft_id: str, parsed_exam: dict[str, Any]) -> int:
+        normalized = normalize_exam_for_save(parsed_exam)
+        updated_at = _utc_now()
+        with closing(self._connect()) as connection, connection:
+            rows = connection.execute(
+                "SELECT id FROM exams WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchall()
+            exam_ids = [row["id"] for row in rows]
+            for exam_id in exam_ids:
+                connection.execute(
+                    """
+                    UPDATE exams
+                    SET title = ?, exam_json = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        normalized.get("title") or "Đề thi chưa đặt tên",
+                        json.dumps(normalized, ensure_ascii=False),
+                        updated_at,
+                        exam_id,
+                    ),
+                )
+                connection.execute("DELETE FROM exam_questions WHERE exam_id = ?", (exam_id,))
+                question_rows = []
+                for section in normalized.get("sections", []):
+                    for question in section.get("questions", []):
+                        question_rows.append(
+                            (
+                                uuid4().hex,
+                                exam_id,
+                                section.get("type"),
+                                int(question.get("number", 0)),
+                                json.dumps(question, ensure_ascii=False),
+                                json.dumps(question.get("correct_answer"), ensure_ascii=False),
+                                float(question.get("score", 0)),
+                            )
+                        )
+                connection.executemany(
+                    """
+                    INSERT INTO exam_questions (
+                        id, exam_id, section_type, question_number, question_json, correct_answer_json, score
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    question_rows,
+                )
+        return len(exam_ids)
+
     def list_drafts(self, limit: int = 12) -> list[dict[str, Any]]:
         with closing(self._connect()) as connection:
             rows = connection.execute(

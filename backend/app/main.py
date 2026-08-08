@@ -3,9 +3,11 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import shutil
 import subprocess
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.app.config import get_settings
+from backend.app.services.ocr import math_replacement_token, suggest_latex_for_image, suggest_latex_for_image_batch
 from backend.app.services.parser import parse_docx_exam
 from backend.app.storage import DraftStore, add_default_scores
 
@@ -60,6 +63,10 @@ class AssignmentVisibilityPayload(BaseModel):
     show_answers: bool = False
 
 
+class OcrAssetPayload(BaseModel):
+    asset_id: str
+
+
 @app.on_event("startup")
 def initialize_storage() -> None:
     settings.upload_root.mkdir(parents=True, exist_ok=True)
@@ -82,6 +89,15 @@ def health() -> dict[str, Any]:
         "database": {
             "path": str(settings.database_path),
             "parent_writable": database_parent_ok,
+        },
+        "ai": {
+            "provider": settings.ai_provider,
+            "auto_ocr_on_import": settings.auto_ocr_on_import,
+            "auto_ocr_max_workers": settings.auto_ocr_max_workers,
+            "auto_ocr_batch_size": settings.auto_ocr_batch_size,
+            "openai_configured": bool(settings.openai_api_key.strip()),
+            "gemini_configured": bool(settings.gemini_api_key.strip()),
+            "model": settings.gemini_model if settings.ai_provider == "gemini" else settings.openai_model,
         },
         "converter": converter,
     }
@@ -150,6 +166,8 @@ async def import_exam(file: UploadFile = File(...)) -> dict[str, Any]:
 
     parsed["source_file"] = filename
     parsed = add_default_scores(parsed)
+    if settings.auto_ocr_on_import:
+        _auto_ocr_exam_assets(draft_id, parsed)
     draft = store.create(draft_id, filename, parsed)
     return _draft_for_client(draft)
 
@@ -170,6 +188,63 @@ def update_exam(draft_id: str, payload: DraftUpdate) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản nháp.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _draft_for_client(updated)
+
+
+@app.post("/api/exams/{draft_id}/assets/ocr")
+def suggest_asset_latex(draft_id: str, payload: OcrAssetPayload) -> dict[str, Any]:
+    try:
+        draft = store.get(draft_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Khong tim thay ban nhap.") from exc
+
+    asset = _find_exam_asset(draft["exam"], payload.asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Khong tim thay anh/cong thuc can OCR.")
+
+    image_path = _asset_image_path(draft_id, asset)
+    if not image_path:
+        raise HTTPException(status_code=422, detail="Chua co anh PNG/JPEG/WebP/GIF de OCR.")
+
+    try:
+        suggestion = suggest_latex_for_image(
+            image_path,
+            settings.ai_provider,
+            openai_api_key=settings.openai_api_key,
+            openai_model=settings.openai_model,
+            gemini_api_key=settings.gemini_api_key,
+            gemini_model=settings.gemini_model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Khong tim thay file anh OCR.") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {
+        "asset_id": payload.asset_id,
+        "source_filename": image_path.name,
+        "suggestion": suggestion,
+        "replacement_token": math_replacement_token(str(suggestion.get("latex", ""))),
+    }
+
+
+@app.post("/api/exams/{draft_id}/auto-ocr")
+def rerun_auto_ocr(draft_id: str) -> dict[str, Any]:
+    try:
+        draft = store.get(draft_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Khong tim thay ban nhap.") from exc
+
+    exam = deepcopy(draft["exam"])
+    _clear_warnings(exam, {"AUTO_OCR_PARTIAL"})
+    _auto_ocr_exam_assets(draft_id, exam)
+    try:
+        updated = store.update(draft_id, exam)
+        store.sync_published_exams_for_draft(draft_id, updated["exam"])
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Khong tim thay ban nhap.") from exc
     return _draft_for_client(updated)
 
 
@@ -345,6 +420,227 @@ def _replace_asset_paths(asset: dict[str, Any], draft_id: str) -> None:
         if path:
             filename = Path(str(path)).name
             asset[key] = f"/api/exams/{draft_id}/assets/{filename}"
+
+
+def _find_exam_asset(exam: dict[str, Any], asset_id: str) -> dict[str, Any] | None:
+    asset = exam.get("assets_by_id", {}).get(asset_id)
+    if isinstance(asset, dict):
+        return asset
+    for candidate in exam.get("assets", []):
+        if isinstance(candidate, dict) and candidate.get("asset_id") == asset_id:
+            return candidate
+    return None
+
+
+def _asset_image_path(draft_id: str, asset: dict[str, Any]) -> Path | None:
+    asset_directory = (settings.asset_root / draft_id).resolve()
+    for key in ("render_path", "original_path"):
+        raw_path = asset.get(key)
+        if not raw_path:
+            continue
+        candidate = Path(str(raw_path))
+        if candidate.is_absolute() and candidate.is_file() and _is_supported_ocr_image(candidate):
+            return candidate
+        filename = candidate.name
+        if not filename:
+            continue
+        asset_path = (asset_directory / filename).resolve()
+        if asset_path.is_relative_to(asset_directory) and asset_path.is_file() and _is_supported_ocr_image(asset_path):
+            return asset_path
+    return None
+
+
+def _is_supported_ocr_image(path: Path) -> bool:
+    return path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def _auto_ocr_exam_assets(draft_id: str, exam: dict[str, Any]) -> None:
+    asset_ids = _image_token_ids_in_exam(exam)
+    if not asset_ids:
+        return
+
+    replacements: dict[str, str] = {}
+    failures: list[str] = []
+
+    image_items: list[tuple[str, Path]] = []
+    for asset_id in asset_ids:
+        asset = _find_exam_asset(exam, asset_id)
+        if not asset:
+            failures.append(f"{asset_id}: asset not found")
+            continue
+        image_path = _asset_image_path(draft_id, asset)
+        if not image_path:
+            failures.append(f"{asset_id}: no supported image")
+            continue
+        image_items.append((asset_id, image_path))
+
+    if settings.ai_provider == "gemini":
+        def run_gemini_batch(batch: list[tuple[str, Path]]) -> None:
+            batch_ids = [asset_id for asset_id, _ in batch]
+            try:
+                suggestions = suggest_latex_for_image_batch(
+                    batch,
+                    settings.ai_provider,
+                    gemini_api_key=settings.gemini_api_key,
+                    gemini_model=settings.gemini_model,
+                )
+            except (ValueError, RuntimeError) as exc:
+                if len(batch) > 1:
+                    midpoint = max(1, len(batch) // 2)
+                    run_gemini_batch(batch[:midpoint])
+                    run_gemini_batch(batch[midpoint:])
+                else:
+                    failures.append(f"{batch_ids[0]}: {exc}")
+                return
+
+            for asset_id in batch_ids:
+                suggestion = suggestions.get(asset_id)
+                if not suggestion:
+                    failures.append(f"{asset_id}: missing batch OCR result")
+                    continue
+                latex = str(suggestion.get("latex", "")).strip()
+                if not latex:
+                    failures.append(f"{asset_id}: empty OCR result")
+                    continue
+                replacements[asset_id] = math_replacement_token(latex)
+
+        for batch in _chunks(image_items, settings.auto_ocr_batch_size):
+            run_gemini_batch(batch)
+        worker_count = 1
+    else:
+        worker_count = min(settings.auto_ocr_max_workers, len(image_items) or 1)
+
+        def ocr_one(item: tuple[str, Path]) -> tuple[str, str | None, str | None]:
+            asset_id, image_path = item
+            try:
+                suggestion = suggest_latex_for_image(
+                    image_path,
+                    settings.ai_provider,
+                    openai_api_key=settings.openai_api_key,
+                    openai_model=settings.openai_model,
+                    gemini_api_key=settings.gemini_api_key,
+                    gemini_model=settings.gemini_model,
+                )
+            except (ValueError, FileNotFoundError, RuntimeError) as exc:
+                return asset_id, None, str(exc)
+
+            latex = str(suggestion.get("latex", "")).strip()
+            if not latex:
+                return asset_id, None, "empty OCR result"
+            return asset_id, math_replacement_token(latex), None
+
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {executor.submit(ocr_one, item): item[0] for item in image_items}
+            for future in as_completed(future_map):
+                asset_id, replacement, error = future.result()
+                if replacement:
+                    replacements[asset_id] = replacement
+                if error:
+                    failures.append(f"{asset_id}: {error}")
+
+    if replacements:
+        _replace_image_tokens_in_exam(exam, replacements)
+        exam.setdefault("ocr", {})["auto_on_import"] = {
+            "provider": settings.ai_provider,
+            "model": settings.gemini_model if settings.ai_provider == "gemini" else settings.openai_model,
+            "converted_count": len(replacements),
+            "failed_count": len(failures),
+            "workers": worker_count,
+            "batch_size": settings.auto_ocr_batch_size if settings.ai_provider == "gemini" else 1,
+        }
+    if failures:
+        exam.setdefault("warnings", []).append(
+            {
+                "code": "AUTO_OCR_PARTIAL",
+                "severity": "warning",
+                "message": f"Auto OCR converted {len(replacements)} assets and failed {len(failures)} assets.",
+                "count": len(failures),
+                "details": failures[:20],
+            }
+        )
+
+
+def _clear_warnings(exam: dict[str, Any], codes: set[str]) -> None:
+    warnings = exam.get("warnings")
+    if not isinstance(warnings, list):
+        return
+    exam["warnings"] = [
+        warning
+        for warning in warnings
+        if not isinstance(warning, dict) or warning.get("code") not in codes
+    ]
+
+
+def _chunks(items: list[tuple[str, Path]], size: int) -> list[list[tuple[str, Path]]]:
+    return [items[index:index + size] for index in range(0, len(items), size)]
+
+
+def _image_token_ids_in_exam(exam: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    pattern = re.compile(r"\[img:\$([A-Za-z0-9_-]+)\$\]")
+    for section in exam.get("sections", []):
+        for question in section.get("questions", []):
+            markup_values = [question.get("prompt_markup", "")]
+            markup_values.extend((question.get("options_markup") or {}).values())
+            markup_values.extend((question.get("statements_markup") or {}).values())
+            for markup in markup_values:
+                for match in pattern.finditer(str(markup)):
+                    asset_id = match.group(1)
+                    if asset_id not in seen:
+                        seen.add(asset_id)
+                        ids.append(asset_id)
+    return ids
+
+
+def _replace_image_tokens_in_exam(exam: dict[str, Any], replacements: dict[str, str]) -> None:
+    def replace_markup(value: Any) -> str:
+        text = str(value or "")
+        for asset_id, replacement in replacements.items():
+            text = text.replace(f"[img:${asset_id}$]", replacement)
+        return text
+
+    for section in exam.get("sections", []):
+        for question in section.get("questions", []):
+            question["prompt_markup"] = replace_markup(question.get("prompt_markup"))
+            if question.get("options"):
+                current = question.get("options_markup") or {}
+                question["options_markup"] = {
+                    label: replace_markup(current.get(label))
+                    for label in question["options"].keys()
+                }
+            if question.get("statements"):
+                current = question.get("statements_markup") or {}
+                question["statements_markup"] = {
+                    label: replace_markup(current.get(label))
+                    for label in question["statements"].keys()
+                }
+
+
+def _reset_exam_markup_from_blocks(exam: dict[str, Any]) -> None:
+    for section in exam.get("sections", []):
+        for question in section.get("questions", []):
+            question["prompt_markup"] = _blocks_to_markup(question.get("prompt_blocks", []))
+            if question.get("options"):
+                question["options_markup"] = {
+                    label: _blocks_to_markup(blocks)
+                    for label, blocks in question["options"].items()
+                }
+            if question.get("statements"):
+                question["statements_markup"] = {
+                    label: _blocks_to_markup(blocks)
+                    for label, blocks in question["statements"].items()
+                }
+
+
+def _blocks_to_markup(blocks: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for block in blocks:
+        if block.get("type") == "image" and block.get("asset_id"):
+            parts.append(f"[img:${block['asset_id']}$]")
+        else:
+            parts.append(str(block.get("text", "")))
+    return "".join(parts)
 
 
 def _section_csv_score(section: dict[str, Any] | None) -> str:

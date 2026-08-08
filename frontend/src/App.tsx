@@ -1,5 +1,7 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode, RefObject } from "react";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import {
   AlertTriangle,
   BarChart3,
@@ -37,9 +39,11 @@ import {
   getAssignmentResults,
   importExam,
   publishAssignment,
+  rerunExamOcr,
   regradeAssignment,
   saveExam,
   saveClassroom,
+  suggestAssetLatex,
   submitAssignment,
   updateAssignmentVisibility,
 } from "./api";
@@ -53,6 +57,7 @@ import type {
   ExamDraft,
   GradingQuestionDetail,
   GradingResult,
+  OcrSuggestionResponse,
   Overview,
   ParsedExam,
   Question,
@@ -87,6 +92,7 @@ function App() {
   const [joinCode, setJoinCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [ocrRunning, setOcrRunning] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
@@ -190,6 +196,21 @@ function App() {
       setError(caught instanceof Error ? caught.message : "Không thể lưu bản nháp.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleRerunOcr() {
+    if (!draft || dirty) return;
+    setOcrRunning(true);
+    setError("");
+    try {
+      const updated = await rerunExamOcr(draft.id);
+      setDraft(updated);
+      setDirty(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Khong the OCR lai de.");
+    } finally {
+      setOcrRunning(false);
     }
   }
 
@@ -499,6 +520,15 @@ function App() {
           >
             <Sigma size={18} />
           </button>
+          <button
+            className="secondary-button"
+            title={dirty ? "Luu ban nhap truoc khi OCR tiep" : "OCR cac cong thuc con dang la anh"}
+            disabled={dirty || ocrRunning}
+            onClick={() => void handleRerunOcr()}
+          >
+            {ocrRunning ? <LoaderCircle className="spin" size={18} /> : <Sigma size={18} />}
+            <span>{ocrRunning ? "Dang OCR" : "OCR sot"}</span>
+          </button>
           <button className="primary-button" disabled={!dirty || saving} onClick={() => void handleSave()}>
             {saving ? <LoaderCircle className="spin" size={18} /> : dirty ? <Save size={18} /> : <Check size={18} />}
             <span>{saving ? "Đang lưu" : dirty ? "Lưu bản nháp" : "Đã lưu"}</span>
@@ -670,7 +700,7 @@ function App() {
         <section className="warning-strip">
           <button className="warning-summary" onClick={() => setShowWarnings((value) => !value)} aria-expanded={showWarnings}>
             <AlertTriangle size={19} />
-            <span>{draft.exam.warnings.length} cảnh báo parser</span>
+            <span>{draft.exam.warnings.length} cảnh báo import/OCR</span>
             <ChevronDown className={showWarnings ? "is-open" : ""} size={18} />
           </button>
           {showWarnings && (
@@ -715,7 +745,14 @@ function App() {
                 editMode={editMode}
                 onChange={updateQuestion}
               />
-              {showMarkupPanel && <MarkupPanel sectionType={activeSection} question={question} />}
+              {showMarkupPanel && (
+                <MarkupPanel
+                  draftId={draft.id}
+                  sectionType={activeSection}
+                  question={question}
+                  onChange={updateQuestion}
+                />
+              )}
             </>
           )}
         </section>
@@ -1159,7 +1196,23 @@ function QuestionContent({ sectionType, question, editMode, onChange }: Question
   );
 }
 
-function MarkupPanel({ sectionType, question }: { sectionType: SectionType; question: Question }) {
+type OcrAssetState = {
+  status: "loading" | "ready" | "error";
+  data?: OcrSuggestionResponse;
+  error?: string;
+};
+
+function MarkupPanel({
+  draftId,
+  sectionType,
+  question,
+  onChange,
+}: {
+  draftId: string;
+  sectionType: SectionType;
+  question: Question;
+  onChange: (mutator: (question: Question) => void) => void;
+}) {
   const entries: Array<[string, string]> = [["Prompt", question.prompt_markup ?? blocksToMarkup(question.prompt_blocks)]];
   if (sectionType === "single_choice") {
     Object.entries(question.options ?? {}).forEach(([label, blocks]) => {
@@ -1173,6 +1226,70 @@ function MarkupPanel({ sectionType, question }: { sectionType: SectionType; ques
   }
 
   const combined = entries.map(([label, value]) => `# ${label}\n${value}`).join("\n\n");
+  const assetIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const match of combined.matchAll(/\[img:\$([A-Za-z0-9_-]+)\$\]/g)) {
+      ids.add(match[1]);
+    }
+    return Array.from(ids);
+  }, [combined]);
+  const [ocrStates, setOcrStates] = useState<Record<string, OcrAssetState>>({});
+  const [applyingAll, setApplyingAll] = useState(false);
+
+  useEffect(() => {
+    setOcrStates({});
+    setApplyingAll(false);
+  }, [draftId, sectionType, question.number]);
+
+  async function fetchOcr(assetId: string) {
+    setOcrStates((current) => ({ ...current, [assetId]: { status: "loading" } }));
+    try {
+      const data = await suggestAssetLatex(draftId, assetId);
+      setOcrStates((current) => ({ ...current, [assetId]: { status: "ready", data } }));
+      return data;
+    } catch (error) {
+      setOcrStates((current) => ({
+        ...current,
+        [assetId]: {
+          status: "error",
+          error: error instanceof Error ? error.message : "Khong the OCR anh nay.",
+        },
+      }));
+      throw error;
+    }
+  }
+
+  async function handleOcr(assetId: string) {
+    await fetchOcr(assetId);
+  }
+
+  function applyReplacement(assetId: string) {
+    const replacement = ocrStates[assetId]?.data?.replacement_token;
+    if (!replacement) return;
+    onChange((item) => replaceImageTokensInQuestion(item, { [assetId]: replacement }));
+  }
+
+  async function handleOcrAndApplyAll() {
+    setApplyingAll(true);
+    const replacements: Record<string, string> = {};
+    try {
+      for (const assetId of assetIds) {
+        try {
+          const current = ocrStates[assetId];
+          const data = current?.status === "ready" && current.data ? current.data : await fetchOcr(assetId);
+          if (data.replacement_token) replacements[assetId] = data.replacement_token;
+        } catch {
+          // Each failed token keeps its own visible error state.
+        }
+      }
+      if (Object.keys(replacements).length > 0) {
+        onChange((item) => replaceImageTokensInQuestion(item, replacements));
+      }
+    } finally {
+      setApplyingAll(false);
+    }
+  }
+
   return (
     <section className="markup-panel">
       <div className="markup-panel-head">
@@ -1186,8 +1303,104 @@ function MarkupPanel({ sectionType, question }: { sectionType: SectionType; ques
         </button>
       </div>
       <textarea readOnly value={combined} rows={Math.min(14, Math.max(6, combined.split("\n").length + 1))} />
+      {assetIds.length > 0 && (
+        <div className="ocr-panel">
+          <div className="ocr-panel-title">
+            <Sigma size={18} />
+            <div>
+              <strong>OCR công thức</strong>
+              <span>AI chỉ gợi ý LaTeX, giáo viên vẫn cần kiểm tra trước khi thay token.</span>
+            </div>
+            <button
+              className="secondary-button ocr-apply-all"
+              type="button"
+              disabled={applyingAll}
+              onClick={() => void handleOcrAndApplyAll()}
+            >
+              {applyingAll ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
+              <span>{applyingAll ? "Đang thay" : "OCR & thay tất cả"}</span>
+            </button>
+          </div>
+          <div className="ocr-token-list">
+            {assetIds.map((assetId) => {
+              const state = ocrStates[assetId];
+              const suggestion = state?.data?.suggestion;
+              return (
+                <div className="ocr-token-card" key={assetId}>
+                  <div className="ocr-token-head">
+                    <code>[img:${assetId}]</code>
+                    <button
+                      className="secondary-button ocr-button"
+                      type="button"
+                      disabled={state?.status === "loading"}
+                      onClick={() => void handleOcr(assetId)}
+                    >
+                      {state?.status === "loading" ? <LoaderCircle className="spin" size={15} /> : <Sigma size={15} />}
+                      <span>{state?.status === "loading" ? "Đang OCR" : "Gợi ý LaTeX"}</span>
+                    </button>
+                  </div>
+                  {state?.status === "error" && <p className="ocr-error">{state.error}</p>}
+                  {suggestion && (
+                    <div className="ocr-result">
+                      <div className="ocr-result-meta">
+                        <span>Độ tin cậy {Math.round(suggestion.confidence * 100)}%</span>
+                        {suggestion.needs_review && <span>Cần duyệt</span>}
+                        <span>{state.data?.source_filename}</span>
+                      </div>
+                      <code>{suggestion.latex || "(trống)"}</code>
+                      {suggestion.notes && <p>{suggestion.notes}</p>}
+                      <button
+                        className="secondary-button ocr-copy-button"
+                        type="button"
+                        onClick={() => void navigator.clipboard?.writeText(state.data?.replacement_token ?? suggestion.latex)}
+                      >
+                        <CopyIcon />
+                        <span>Copy math token</span>
+                      </button>
+                      <button
+                        className="primary-button ocr-copy-button"
+                        type="button"
+                        onClick={() => applyReplacement(assetId)}
+                      >
+                        <Check size={15} />
+                        <span>Thay token này</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </section>
   );
+}
+
+function replaceImageTokensInQuestion(question: Question, replacements: Record<string, string>) {
+  const replaceMarkup = (value: string) => {
+    let next = value;
+    Object.entries(replacements).forEach(([assetId, replacement]) => {
+      next = next.split(`[img:$${assetId}$]`).join(replacement);
+    });
+    return next;
+  };
+
+  question.prompt_markup = replaceMarkup(question.prompt_markup ?? blocksToMarkup(question.prompt_blocks));
+  if (question.options) {
+    const nextMarkup = { ...(question.options_markup ?? {}) };
+    Object.entries(question.options).forEach(([label, blocks]) => {
+      nextMarkup[label] = replaceMarkup(nextMarkup[label] ?? blocksToMarkup(blocks));
+    });
+    question.options_markup = nextMarkup;
+  }
+  if (question.statements) {
+    const nextMarkup = { ...(question.statements_markup ?? {}) };
+    Object.entries(question.statements).forEach(([label, blocks]) => {
+      nextMarkup[label] = replaceMarkup(nextMarkup[label] ?? blocksToMarkup(blocks));
+    });
+    question.statements_markup = nextMarkup;
+  }
 }
 
 function CopyIcon() {
@@ -1246,7 +1459,7 @@ function renderMarkup(markup: string, blocks: ContentBlock[]) {
   const imageBlocks = blocks.filter((block): block is Extract<ContentBlock, { type: "image" }> => block.type === "image");
   const imageIndexes = new Map<string, number>();
   const nodes: ReactNode[] = [];
-  const tokenPattern = /\[img:\$([A-Za-z0-9_-]+)\$\]/g;
+  const tokenPattern = /\[(img|math|math64):\$([A-Za-z0-9_\-=+/%.\\{}^,;:|()[\]<>~`'"!?\s-]*?)\$\]/g;
   let cursor = 0;
   let nodeIndex = 0;
 
@@ -1255,7 +1468,16 @@ function renderMarkup(markup: string, blocks: ContentBlock[]) {
       nodes.push(<span key={`text-${nodeIndex++}`}>{unescapeMarkupText(markup.slice(cursor, match.index))}</span>);
     }
 
-    const assetId = match[1];
+    const tokenType = match[1];
+    const tokenValue = match[2];
+    if (tokenType === "math" || tokenType === "math64") {
+      const latex = tokenType === "math64" ? decodeMath64(tokenValue) : unescapeMarkupText(tokenValue);
+      nodes.push(<MathToken key={`math-${nodeIndex++}`} latex={latex} />);
+      cursor = match.index + match[0].length;
+      continue;
+    }
+
+    const assetId = tokenValue;
     const occurrence = imageIndexes.get(assetId) ?? 0;
     const matchingImages = imageBlocks.filter((block) => block.asset_id === assetId);
     const imageBlock = matchingImages[occurrence] ?? matchingImages[0];
@@ -1279,6 +1501,37 @@ function renderMarkup(markup: string, blocks: ContentBlock[]) {
     nodes.push(<span key={`text-${nodeIndex++}`}>{unescapeMarkupText(markup.slice(cursor))}</span>);
   }
   return nodes;
+}
+
+function decodeMath64(value: string) {
+  try {
+    const padded = value + "=".repeat((4 - (value.length % 4)) % 4);
+    const binary = window.atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return value;
+  }
+}
+
+function MathToken({ latex }: { latex: string }) {
+  const displayMode = /\\begin\{(?:cases|aligned|array|[bpvV]?matrix)\}/.test(latex);
+  try {
+    return (
+      <span
+        className={`math-token ${displayMode ? "is-display" : ""}`}
+        dangerouslySetInnerHTML={{
+          __html: katex.renderToString(latex, {
+            displayMode,
+            throwOnError: false,
+            strict: "ignore",
+          }),
+        }}
+      />
+    );
+  } catch {
+    return <span className="math-token-fallback">{latex}</span>;
+  }
 }
 
 function blocksToMarkup(blocks: ContentBlock[]) {

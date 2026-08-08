@@ -92,6 +92,19 @@ export type ExamDraft = {
   exam: ParsedExam;
 };
 
+export type OcrSuggestionResponse = {
+  asset_id: string;
+  source_filename: string;
+  replacement_token: string;
+  suggestion: {
+    latex: string;
+    confidence: number;
+    notes: string;
+    needs_review: boolean;
+    raw_text?: string;
+  };
+};
+
 export type DraftSummary = {
   id: string;
   title: string;

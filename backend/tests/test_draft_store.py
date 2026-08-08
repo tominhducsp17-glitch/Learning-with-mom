@@ -164,6 +164,54 @@ class DraftStoreTest(unittest.TestCase):
             student_assignment["exam"]["sections"][0]["questions"][0],
         )
 
+    def test_sync_published_exams_for_draft_updates_assignment_exam(self) -> None:
+        exam = add_default_scores(
+            {
+                "title": "OCR sync",
+                "sections": [
+                    {
+                        "type": "single_choice",
+                        "questions": [
+                            {
+                                "number": 1,
+                                "prompt_blocks": [],
+                                "prompt_markup": "Tinh [img:$img_0001$]",
+                                "options_markup": {},
+                                "correct_answer": "A",
+                            }
+                        ],
+                    },
+                    {"type": "true_false", "questions": []},
+                    {"type": "short_answer", "questions": []},
+                ],
+                "answer_keys": {},
+                "assets": [],
+                "warnings": [],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = DraftStore(Path(tmp) / "test.sqlite3")
+            store.initialize()
+            store.create("draft-sync", "sample.docx", exam)
+            classroom = store.upsert_class(
+                None,
+                "12A3",
+                "2026-2027",
+                [{"name": "Minh Duc", "student_code": "HS001"}],
+            )
+            assignment = store.publish_assignment("draft-sync", classroom["id"], 45)
+
+            updated_exam = store.get("draft-sync")["exam"]
+            updated_exam["sections"][0]["questions"][0]["prompt_markup"] = "Tinh [math64:$eCsx$]"
+            synced_count = store.sync_published_exams_for_draft("draft-sync", updated_exam)
+            synced_assignment = store.get_assignment_by_code(assignment["code"])
+
+        synced_question = synced_assignment["exam"]["sections"][0]["questions"][0]
+        self.assertEqual(1, synced_count)
+        self.assertIn("[math64:$eCsx$]", synced_question["prompt_markup"])
+        self.assertNotIn("[img:$img_0001$]", synced_question["prompt_markup"])
+
 
 if __name__ == "__main__":
     unittest.main()

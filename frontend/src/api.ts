@@ -1,4 +1,14 @@
-import type { Assignment, AssignmentAnalytics, AssignmentResults, ClassroomRoster, ExamDraft, Overview, ParsedExam, SubmissionResult } from "./types";
+import type {
+  Assignment,
+  AssignmentAnalytics,
+  AssignmentResults,
+  ClassroomRoster,
+  ExamDraft,
+  OcrSuggestionResponse,
+  Overview,
+  ParsedExam,
+  SubmissionResult,
+} from "./types";
 
 async function readResponse(response: Response): Promise<ExamDraft> {
   if (!response.ok) {
@@ -62,6 +72,24 @@ export async function saveExam(draftId: string, exam: ParsedExam): Promise<ExamD
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ exam }),
+    }),
+  );
+}
+
+export async function suggestAssetLatex(draftId: string, assetId: string): Promise<OcrSuggestionResponse> {
+  return readJson<OcrSuggestionResponse>(
+    await fetch(`/api/exams/${draftId}/assets/ocr`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset_id: assetId }),
+    }),
+  );
+}
+
+export async function rerunExamOcr(draftId: string): Promise<ExamDraft> {
+  return readResponse(
+    await fetch(`/api/exams/${draftId}/auto-ocr`, {
+      method: "POST",
     }),
   );
 }
