@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import csv
 import io
 import os
@@ -20,9 +21,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.app.config import get_settings
+from backend.app.services.chatbot import ask_chatbot
+from backend.app.services.grading import grade_exam_submission
 from backend.app.services.ocr import math_replacement_token, suggest_latex_for_image, suggest_latex_for_image_batch
 from backend.app.services.parser import parse_docx_exam
-from backend.app.storage import DraftStore, add_default_scores
+from backend.app.storage import DraftStore, add_default_scores, section_display
 
 
 settings = get_settings()
@@ -65,6 +68,19 @@ class AssignmentVisibilityPayload(BaseModel):
 
 class OcrAssetPayload(BaseModel):
     asset_id: str
+
+
+class ChatMessagePayload(BaseModel):
+    role: str
+    content: str
+
+
+class StudentChatPayload(BaseModel):
+    student_id: str
+    section_type: str
+    question_number: int
+    message: str
+    history: list[ChatMessagePayload] = []
 
 
 @app.on_event("startup")
@@ -308,6 +324,55 @@ def submit_assignment(code: str, payload: SubmissionUpdate) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Không tìm thấy học sinh hoặc bài được giao.") from exc
 
 
+@app.post("/api/assignments/{code}/chat")
+def student_assignment_chat(code: str, payload: StudentChatPayload) -> dict[str, Any]:
+    try:
+        assignment = store.get_assignment_by_code(code, include_answers=True, student_id=payload.student_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Khong tim thay hoc sinh hoac bai duoc giao.") from exc
+
+    submission = assignment.get("submission")
+    if not submission or submission.get("status") != "submitted":
+        raise HTTPException(status_code=403, detail="Chi co the hoi chatbot sau khi da nop bai.")
+    if not assignment.get("show_answers"):
+        raise HTTPException(status_code=403, detail="Giao vien chua cong bo dap an cho bai nay.")
+
+    question = _find_question(assignment["exam"], payload.section_type, payload.question_number)
+    if not question:
+        raise HTTPException(status_code=404, detail="Khong tim thay cau hoi.")
+
+    grade = grade_exam_submission(assignment["exam"], submission.get("answers") or {})
+    detail = _find_grade_detail(grade, payload.section_type, payload.question_number)
+    context = _build_chat_question_context(
+        assignment=assignment,
+        question=question,
+        section_type=payload.section_type,
+        detail=detail,
+        student_answer=(submission.get("answers") or {}).get(f"{payload.section_type}:{payload.question_number}"),
+    )
+    try:
+        answer = ask_chatbot(
+            provider=settings.ai_provider,
+            message=payload.message,
+            context=context,
+            history=[item.model_dump() for item in payload.history],
+            openai_api_key=settings.openai_api_key,
+            openai_model=settings.openai_model,
+            gemini_api_key=settings.gemini_api_key,
+            gemini_model=settings.gemini_model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {
+        "answer": answer,
+        "section_type": payload.section_type,
+        "question_number": payload.question_number,
+    }
+
+
 @app.get("/api/assignments/{code}/results")
 def get_assignment_results(code: str) -> dict[str, Any]:
     try:
@@ -401,6 +466,87 @@ def _assignment_for_client(assignment: dict[str, Any]) -> dict[str, Any]:
         for question in section.get("questions", []):
             _replace_paths_in_value(question, draft_id)
     return payload
+
+
+def _find_question(exam: dict[str, Any], section_type: str, number: int) -> dict[str, Any] | None:
+    for section in exam.get("sections", []):
+        if section.get("type") != section_type:
+            continue
+        for question in section.get("questions", []):
+            if int(question.get("number", 0) or 0) == int(number):
+                return question
+    return None
+
+
+def _find_grade_detail(grade: dict[str, Any], section_type: str, number: int) -> dict[str, Any] | None:
+    for detail in grade.get("questions", []):
+        if detail.get("section_type") == section_type and int(detail.get("number", 0) or 0) == int(number):
+            return detail
+    return None
+
+
+def _build_chat_question_context(
+    *,
+    assignment: dict[str, Any],
+    question: dict[str, Any],
+    section_type: str,
+    detail: dict[str, Any] | None,
+    student_answer: Any,
+) -> str:
+    lines = [
+        f"Ten bai: {assignment.get('title', '')}",
+        f"Lop: {(assignment.get('classroom') or {}).get('name', '')}",
+        f"Phan: {section_display(section_type)}",
+        f"Cau: {question.get('number')}",
+        f"Noi dung: {_markup_to_chat_text(question.get('prompt_markup') or _blocks_to_markup(question.get('prompt_blocks') or []))}",
+    ]
+    options_markup = question.get("options_markup") or {}
+    if isinstance(options_markup, dict) and options_markup:
+        lines.append("Lua chon:")
+        for label in sorted(options_markup):
+            lines.append(f"- {label}: {_markup_to_chat_text(options_markup[label])}")
+    statements_markup = question.get("statements_markup") or {}
+    if isinstance(statements_markup, dict) and statements_markup:
+        lines.append("Cac y dung/sai:")
+        for label in sorted(statements_markup):
+            lines.append(f"- {label}: {_markup_to_chat_text(statements_markup[label])}")
+    lines.extend(
+        [
+            f"Hoc sinh tra loi: {_answer_to_text(student_answer)}",
+            f"Dap an dung: {_answer_to_text(question.get('correct_answer'))}",
+        ]
+    )
+    if detail:
+        lines.append(f"Ket qua cham: {'dung' if detail.get('correct') else 'sai'}, diem {detail.get('score')}/{detail.get('max_score')}")
+        if detail.get("items"):
+            lines.append(f"Chi tiet tung y: {_answer_to_text(detail.get('items'))}")
+    return "\n".join(lines)
+
+
+def _markup_to_chat_text(markup: Any) -> str:
+    text = str(markup or "")
+
+    def replace_math64(match: re.Match[str]) -> str:
+        encoded = match.group(1)
+        padding = "=" * (-len(encoded) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode((encoded + padding).encode("ascii")).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            decoded = encoded
+        return f"\\({decoded}\\)"
+
+    text = re.sub(r"\[math64:\$([A-Za-z0-9_\-=]+)\$\]", replace_math64, text)
+    text = re.sub(r"\[math:\$(.*?)\$\]", lambda match: f"\\({match.group(1)}\\)", text)
+    text = re.sub(r"\[img:\$([A-Za-z0-9_-]+)\$\]", r"(anh cong thuc \1)", text)
+    return " ".join(text.split())
+
+
+def _answer_to_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    if value is None or value == "":
+        return "(chua tra loi)"
+    return str(value)
 
 
 def _replace_paths_in_value(value: Any, draft_id: str) -> None:

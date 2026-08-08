@@ -2,11 +2,14 @@ import type {
   Assignment,
   AssignmentAnalytics,
   AssignmentResults,
+  ChatMessage,
   ClassroomRoster,
   ExamDraft,
   OcrSuggestionResponse,
   Overview,
   ParsedExam,
+  SectionType,
+  StudentChatResponse,
   SubmissionResult,
 } from "./types";
 
@@ -166,6 +169,29 @@ export async function submitAssignment(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ student_id: studentId, answers }),
+    }),
+  );
+}
+
+export async function askStudentChat(
+  code: string,
+  studentId: string,
+  sectionType: SectionType,
+  questionNumber: number,
+  message: string,
+  history: ChatMessage[],
+): Promise<StudentChatResponse> {
+  return readJson<StudentChatResponse>(
+    await fetch(`/api/assignments/${encodeURIComponent(code)}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        student_id: studentId,
+        section_type: sectionType,
+        question_number: questionNumber,
+        message,
+        history,
+      }),
     }),
   );
 }

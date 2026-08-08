@@ -18,6 +18,7 @@ import {
   ImageOff,
   Link,
   LoaderCircle,
+  MessageCircle,
   Pencil,
   RotateCcw,
   Save,
@@ -29,6 +30,7 @@ import {
 } from "lucide-react";
 import {
   autosaveSubmission,
+  askStudentChat,
   assignmentCsvUrl,
   assignmentXlsxUrl,
   getAssignment,
@@ -51,6 +53,7 @@ import type {
   Assignment,
   AssignmentAnalytics,
   AssignmentResults,
+  ChatMessage,
   ClassroomRoster,
   ContentBlock,
   DraftSummary,
@@ -1503,6 +1506,35 @@ function renderMarkup(markup: string, blocks: ContentBlock[]) {
   return nodes;
 }
 
+function renderChatContent(content: string) {
+  const nodes: ReactNode[] = [];
+  const tokenPattern = /\\\((.*?)\\\)|\$([^$\n]+)\$/g;
+  let cursor = 0;
+  let nodeIndex = 0;
+
+  function pushText(text: string) {
+    const parts = text.split("\n");
+    parts.forEach((part, index) => {
+      if (part) nodes.push(<span key={`chat-text-${nodeIndex++}`}>{part}</span>);
+      if (index < parts.length - 1) nodes.push(<br key={`chat-br-${nodeIndex++}`} />);
+    });
+  }
+
+  for (const match of content.matchAll(tokenPattern)) {
+    if (match.index > cursor) {
+      pushText(content.slice(cursor, match.index));
+    }
+    const latex = match[1] || match[2] || "";
+    nodes.push(<MathToken key={`chat-math-${nodeIndex++}`} latex={latex} />);
+    cursor = match.index + match[0].length;
+  }
+
+  if (cursor < content.length) {
+    pushText(content.slice(cursor));
+  }
+  return nodes;
+}
+
 function decodeMath64(value: string) {
   try {
     const padded = value + "=".repeat((4 - (value.length % 4)) % 4);
@@ -2016,6 +2048,8 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
           showScore={loadedAssignment.show_score}
           showAnswers={loadedAssignment.show_answers}
           studentName={selectedStudent?.name ?? ""}
+          assignmentCode={loadedAssignment.code}
+          studentId={selectedStudentId}
           answeredCount={answeredCount}
           totalQuestions={studentQuestions.length}
           questions={studentQuestions}
@@ -2126,6 +2160,8 @@ function StudentResultScreen({
   showScore,
   showAnswers,
   studentName,
+  assignmentCode,
+  studentId,
   answeredCount,
   totalQuestions,
   questions,
@@ -2134,6 +2170,8 @@ function StudentResultScreen({
   showScore: boolean;
   showAnswers: boolean;
   studentName: string;
+  assignmentCode: string;
+  studentId: string;
   answeredCount: number;
   totalQuestions: number;
   questions: StudentQuestionItem[];
@@ -2188,6 +2226,8 @@ function StudentResultScreen({
               key={`${detail.section_type}-${detail.number}`}
               detail={detail}
               showAnswers={showAnswers}
+              assignmentCode={assignmentCode}
+              studentId={studentId}
               questionItem={item}
             />
           );
@@ -2200,10 +2240,14 @@ function StudentResultScreen({
 function StudentResultQuestion({
   detail,
   showAnswers,
+  assignmentCode,
+  studentId,
   questionItem,
 }: {
   detail: GradingQuestionDetail;
   showAnswers: boolean;
+  assignmentCode: string;
+  studentId: string;
   questionItem?: StudentQuestionItem;
 }) {
   const reviewQuestion = questionItem && showAnswers
@@ -2236,6 +2280,108 @@ function StudentResultQuestion({
             onChange={() => undefined}
             showCorrect={true}
           />
+        </div>
+      )}
+      {reviewQuestion && (
+        <StudentQuestionChat
+          assignmentCode={assignmentCode}
+          studentId={studentId}
+          detail={detail}
+        />
+      )}
+    </div>
+  );
+}
+
+function StudentQuestionChat({
+  assignmentCode,
+  studentId,
+  detail,
+}: {
+  assignmentCode: string;
+  studentId: string;
+  detail: GradingQuestionDetail;
+}) {
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function sendMessage(preset?: string) {
+    const content = (preset ?? input).trim();
+    if (!content || busy) return;
+    const nextMessages: ChatMessage[] = [...messages, { role: "user", content }];
+    setMessages(nextMessages);
+    setInput("");
+    setBusy(true);
+    setError("");
+    try {
+      const response = await askStudentChat(
+        assignmentCode,
+        studentId,
+        detail.section_type,
+        detail.number,
+        content,
+        messages,
+      );
+      setMessages([...nextMessages, { role: "assistant", content: response.answer }]);
+      setOpen(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Chua the goi chatbot.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="student-chat-box">
+      <button className="secondary-button student-chat-toggle" onClick={() => setOpen((value) => !value)}>
+        <MessageCircle size={18} />
+        <span>{open ? "Ẩn trợ lý" : "Hỏi trợ lý câu này"}</span>
+      </button>
+      {open && (
+        <div className="student-chat-panel">
+          <div className="student-chat-head">
+            <div>
+              <strong>Trợ lý giải thích</strong>
+              <span>Câu {detail.number} · chỉ dựa trên đề và đáp án đã công bố</span>
+            </div>
+          </div>
+          {messages.length === 0 && (
+            <div className="chat-suggestions">
+              <button onClick={() => void sendMessage("Giai thich vi sao dap an nay dung.")}>Vì sao đáp án đúng?</button>
+              <button onClick={() => void sendMessage("Em sai o dau va can nho cong thuc nao?")}>Em sai ở đâu?</button>
+            </div>
+          )}
+          {messages.length > 0 && (
+            <div className="chat-messages">
+              {messages.map((message, index) => (
+                <div className={`chat-bubble ${message.role}`} key={`${message.role}-${index}`}>
+                  {renderChatContent(message.content)}
+                </div>
+              ))}
+            </div>
+          )}
+          {error && <div className="ocr-error">{error}</div>}
+          <form
+            className="student-chat-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void sendMessage();
+            }}
+          >
+            <input
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder="Hỏi thêm về câu này..."
+              disabled={busy}
+            />
+            <button className="primary-button" disabled={busy || !input.trim()}>
+              {busy ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
+              <span>Gửi</span>
+            </button>
+          </form>
         </div>
       )}
     </div>

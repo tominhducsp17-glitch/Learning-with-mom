@@ -2381,17 +2381,17 @@ button:disabled {
   background: #fff8f6;
 }
 
-.student-result-question span,
-.student-result-question strong {
+.student-result-question > div:first-child > span,
+.student-result-question > div:first-child > strong {
   display: block;
 }
 
-.student-result-question span {
+.student-result-question > div:first-child > span {
   color: #756f8b;
   font-size: 12px;
 }
 
-.student-result-question strong {
+.student-result-question > div:first-child > strong {
   margin-top: 3px;
   color: var(--ink);
   font-weight: 900;
@@ -2410,6 +2410,115 @@ button:disabled {
   color: #5b5574;
   background: #f5f0ff;
   font-weight: 800;
+}
+
+.student-result-review,
+.student-chat-box {
+  grid-column: 1 / -1;
+}
+
+.student-chat-box {
+  display: grid;
+  gap: 10px;
+  margin-top: 3px;
+}
+
+.student-chat-toggle {
+  justify-self: start;
+  height: 38px;
+  border-color: #d9cdfd;
+  color: var(--purple);
+  background: #fbf8ff;
+}
+
+.student-chat-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 2px solid #e6dcff;
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 14px 14px, rgba(112, 82, 236, 0.08) 1.5px, transparent 2px) 0 0 / 18px 18px,
+    #fffefe;
+}
+
+.student-chat-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.student-chat-head strong {
+  margin: 0;
+  color: var(--ink);
+  font-size: 17px;
+}
+
+.student-chat-head span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chat-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-suggestions button {
+  min-height: 34px;
+  border: 1px solid #d9cdfd;
+  border-radius: 999px;
+  padding: 6px 12px;
+  color: var(--purple);
+  background: #ffffff;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.chat-messages {
+  display: grid;
+  gap: 8px;
+  max-height: 340px;
+  overflow: auto;
+}
+
+.chat-bubble {
+  width: min(88%, 760px);
+  border-radius: 8px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.chat-bubble.user {
+  justify-self: end;
+  background: #e9ddff;
+}
+
+.chat-bubble.assistant {
+  justify-self: start;
+  border: 1px solid #d8f2e8;
+  background: #f3fffa;
+}
+
+.student-chat-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.student-chat-form input {
+  min-height: 42px;
+  border: 1px solid #d9cdfd;
+  border-radius: 8px;
+  padding: 0 12px;
+  color: var(--ink);
+  background: #ffffff;
+  font: inherit;
 }
 
 .student-picker label {

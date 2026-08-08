@@ -222,6 +222,17 @@ export type SubmissionResult = {
   grade: GradingResult | null;
 };
 
+export type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+export type StudentChatResponse = {
+  answer: string;
+  section_type: SectionType;
+  question_number: number;
+};
+
 export type AssignmentResults = {
   assignment: {
     id: string;
