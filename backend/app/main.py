@@ -116,6 +116,7 @@ def health() -> dict[str, Any]:
             "gemini_key_count": len(settings.gemini_api_keys),
             "model": settings.gemini_model if settings.ai_provider == "gemini" else settings.openai_model,
         },
+        "public_base_url": settings.public_base_url,
         "converter": converter,
     }
 
@@ -468,7 +469,14 @@ def _assignment_for_client(assignment: dict[str, Any]) -> dict[str, Any]:
     for section in exam.get("sections", []):
         for question in section.get("questions", []):
             _replace_paths_in_value(question, draft_id)
+    payload["student_url"] = _student_assignment_url(payload["code"])
     return payload
+
+
+def _student_assignment_url(code: str) -> str | None:
+    if not settings.public_base_url:
+        return None
+    return f"{settings.public_base_url}/#student/{code}"
 
 
 def _find_question(exam: dict[str, Any], section_type: str, number: int) -> dict[str, Any] | None:

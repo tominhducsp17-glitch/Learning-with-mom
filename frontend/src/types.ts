@@ -142,6 +142,7 @@ export type ClassroomRoster = Classroom & {
 export type Assignment = {
   id: string;
   code: string;
+  student_url?: string | null;
   status: "published";
   duration_minutes: number;
   show_score: boolean;

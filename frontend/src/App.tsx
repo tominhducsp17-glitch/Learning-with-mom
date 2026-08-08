@@ -144,7 +144,7 @@ function App() {
     [draft],
   );
   const selectedClassroom = classrooms.find((classroom) => classroom.id === selectedClassId) ?? null;
-  const assignmentHref = assignment ? `${window.location.origin}/#student/${assignment.code}` : "";
+  const assignmentHref = assignment ? assignment.student_url || `${window.location.origin}/#student/${assignment.code}` : "";
 
   async function handleFile(file?: File) {
     if (!file) return;
@@ -663,7 +663,7 @@ function App() {
           </div>
           <div className="publish-link">
             <Link size={17} />
-            <a href={`#student/${assignment.code}`}>{assignmentHref}</a>
+            <a href={assignmentHref}>{assignmentHref}</a>
           </div>
           <div className="publish-actions">
             <button className="icon-button" title="Tải kết quả" aria-label="Tải kết quả" onClick={() => void refreshResults()}>

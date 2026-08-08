@@ -23,6 +23,8 @@ Quick command:
 .\scripts\start_public_tunnel_docker.ps1
 ```
 
+The script automatically writes the generated tunnel URL to `.env.production` as `PUBLIC_BASE_URL` and recreates the app container. After that, the teacher screen will show/copy student links with the public domain.
+
 Manual command:
 
 ```powershell
@@ -34,12 +36,19 @@ docker logs mathexam-tunnel --tail 120
 
 Copy the generated URL ending in `.trycloudflare.com`.
 
+If using the manual command, also set `PUBLIC_BASE_URL` in `.env.production` and restart the app:
+
+```powershell
+PUBLIC_BASE_URL=https://YOUR-TUNNEL.trycloudflare.com
+docker compose up --build -d --force-recreate mathexam
+```
+
 ## Share with students
 
-Do not share the root URL while the app has no teacher login. Share only the student assignment URL:
+Do not share the root URL while the app has no teacher login. Share only the student assignment URL shown in the teacher screen:
 
 ```text
-https://YOUR-TUNNEL.trycloudflare.com/#/student/AZT-XXXXXX
+https://YOUR-TUNNEL.trycloudflare.com/#student/AZT-XXXXXX
 ```
 
 The quick tunnel URL changes when the tunnel is recreated. For stable URLs, use a named Cloudflare Tunnel or a VPS.

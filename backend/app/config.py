@@ -61,6 +61,7 @@ class Settings:
     database_path: Path
     frontend_dist: Path
     max_upload_bytes: int
+    public_base_url: str
     openai_api_key: str
     openai_model: str
     gemini_api_key: str
@@ -98,6 +99,7 @@ def get_settings() -> Settings:
         database_path=database_path,
         frontend_dist=PROJECT_ROOT / "frontend" / "dist",
         max_upload_bytes=max_upload_mb * 1024 * 1024,
+        public_base_url=os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/"),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
         gemini_api_key=gemini_api_key,
