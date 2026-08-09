@@ -53,6 +53,8 @@ https://YOUR-TUNNEL.trycloudflare.com/#student/AZT-XXXXXX
 
 The quick tunnel URL changes when the tunnel is recreated. For stable URLs, use a named Cloudflare Tunnel or a VPS.
 
+For a stable Cloudflare URL with your own domain, see `docs/named_cloudflare_tunnel.md`.
+
 ## Stop the tunnel
 
 Quick command:
