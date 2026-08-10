@@ -2547,6 +2547,88 @@ button:disabled {
   font-size: 13px;
 }
 
+.student-start-card {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 18px 22px;
+  align-items: center;
+  max-width: 760px;
+  margin: 42px auto 0;
+  padding: 30px;
+  border: 2px solid #e6dcff;
+  border-radius: 8px;
+  background: #fffdf8;
+  box-shadow: 0 10px 0 rgba(111, 90, 232, 0.10), 0 22px 44px rgba(45, 41, 74, 0.08);
+}
+
+.student-start-icon {
+  width: 78px;
+  height: 78px;
+  display: grid;
+  place-items: center;
+  border: 3px solid #ffffff;
+  border-radius: 8px;
+  color: #9b7620;
+  background: #ffefad;
+  box-shadow: 0 8px 0 #dfbd3f;
+}
+
+.student-start-card span {
+  color: var(--muted);
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.student-start-card h1 {
+  margin: 4px 0 6px;
+  color: var(--ink);
+  font-size: 32px;
+  line-height: 1.1;
+}
+
+.student-start-card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.student-start-card label {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  color: var(--ink);
+  font-weight: 950;
+}
+
+.student-start-card select {
+  grid-column: 1 / -1;
+  min-height: 52px;
+  border: 2px solid #d8cef8;
+  border-radius: 8px;
+  padding: 0 14px;
+  color: var(--ink);
+  background: #ffffff;
+  font: inherit;
+  font-weight: 750;
+}
+
+.student-start-status {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f6f1ff;
+}
+
+.student-start-status.submitted {
+  color: #096b50;
+  background: #e4fbf1;
+}
+
+.student-start-button {
+  grid-column: 1 / -1;
+  min-height: 54px;
+  justify-content: center;
+  font-size: 18px;
+}
+
 .student-progress {
   max-width: 980px;
   margin: 18px auto 0;
@@ -2990,6 +3072,29 @@ button:disabled {
   .student-picker {
     grid-template-columns: 1fr;
     padding: 0 14px;
+  }
+
+  .student-start-card {
+    grid-template-columns: 1fr;
+    margin: 18px 14px 0;
+    padding: 20px;
+  }
+
+  .student-start-icon {
+    width: 68px;
+    height: 68px;
+  }
+
+  .student-start-card h1 {
+    font-size: 26px;
+  }
+
+  .student-start-button {
+    width: 100%;
+  }
+
+  .student-start-button span {
+    display: inline;
   }
 
   .student-progress {

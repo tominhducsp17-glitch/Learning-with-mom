@@ -1834,6 +1834,7 @@ type StudentQuestionItem = {
 function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
   const [loadedAssignment, setLoadedAssignment] = useState<Assignment | null>(null);
   const [selectedStudentId, setSelectedStudentId] = useState("");
+  const [studentSessionStarted, setStudentSessionStarted] = useState(false);
   const [answers, setAnswers] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1852,7 +1853,13 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
       .then((assignment) => {
         if (ignore) return;
         setLoadedAssignment(assignment);
-        setSelectedStudentId(assignment.students[0]?.id ?? "");
+        setSelectedStudentId("");
+        setStudentSessionStarted(false);
+        setAnswers({});
+        setStartedAt(null);
+        setSubmitted(false);
+        setGrade(null);
+        setTimeExpired(false);
         setStudentQuestionIndex(0);
       })
       .catch((caught) => {
@@ -1885,7 +1892,7 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
   );
 
   useEffect(() => {
-    if (!selectedStudentId) return;
+    if (!studentSessionStarted || !selectedStudentId) return;
     let ignore = false;
     setSaving(true);
     setError("");
@@ -1932,7 +1939,7 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
     return () => {
       ignore = true;
     };
-  }, [code, selectedStudentId]);
+  }, [code, selectedStudentId, studentSessionStarted]);
 
   useEffect(() => {
     if (!loadedAssignment || !startedAt || submitted) {
@@ -2001,6 +2008,26 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
     }
   }
 
+  function resetStudentWorkState() {
+    setStudentSessionStarted(false);
+    setAnswers({});
+    setStartedAt(null);
+    setRemainingSeconds(null);
+    setTimeExpired(false);
+    setStudentQuestionIndex(0);
+    setSubmitted(false);
+    setGrade(null);
+    setError("");
+  }
+
+  function beginStudentSession() {
+    if (!selectedStudentId) {
+      setError("Em hãy chọn đúng tên của mình trước khi bắt đầu làm bài.");
+      return;
+    }
+    setStudentSessionStarted(true);
+  }
+
   if (busy) {
     return (
       <main className="student-shell centered">
@@ -2041,7 +2068,7 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
           <Clock size={18} />
           <strong>{submitted ? "Đã nộp" : remainingSeconds === null ? "--:--" : formatRemainingTime(remainingSeconds)}</strong>
         </div>
-        <button className="secondary-button" disabled={saving || submitted || !selectedStudentId} onClick={() => void handleSubmit()}>
+        <button className="secondary-button" disabled={!studentSessionStarted || saving || submitted || !selectedStudentId} onClick={() => void handleSubmit()}>
           {saving ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}
           <span>{submitted ? "Đã nộp" : "Nộp bài"}</span>
         </button>
@@ -2049,7 +2076,18 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
 
       {error && <div className="error-banner workspace-error">{error}</div>}
 
-      {submitted ? (
+      {!studentSessionStarted ? (
+        <StudentStartScreen
+          assignment={loadedAssignment}
+          selectedStudentId={selectedStudentId}
+          saving={saving}
+          onSelectStudent={(studentId) => {
+            setSelectedStudentId(studentId);
+            resetStudentWorkState();
+          }}
+          onStart={beginStudentSession}
+        />
+      ) : submitted ? (
         <StudentResultScreen
           grade={grade}
           showScore={loadedAssignment.show_score}
@@ -2159,6 +2197,57 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
         </>
       )}
     </main>
+  );
+}
+
+function StudentStartScreen({
+  assignment,
+  selectedStudentId,
+  saving,
+  onSelectStudent,
+  onStart,
+}: {
+  assignment: Assignment;
+  selectedStudentId: string;
+  saving: boolean;
+  onSelectStudent: (studentId: string) => void;
+  onStart: () => void;
+}) {
+  const selectedStudent = assignment.students.find((student) => student.id === selectedStudentId);
+  return (
+    <section className="student-start-card">
+      <div className="student-start-icon">
+        <BookOpen size={44} />
+      </div>
+      <div>
+        <span>Bước 01</span>
+        <h1>Chọn tên để vào làm bài</h1>
+        <p>Em chọn đúng tên của mình rồi bấm bắt đầu. Thời gian làm bài sẽ tính từ lúc bắt đầu.</p>
+      </div>
+      <label htmlFor="student-start-select">Học sinh</label>
+      <select
+        id="student-start-select"
+        value={selectedStudentId}
+        disabled={saving}
+        onChange={(event) => onSelectStudent(event.target.value)}
+      >
+        <option value="">Chọn tên học sinh...</option>
+        {assignment.students.map((student) => (
+          <option key={student.id} value={student.id}>
+            {student.student_code} - {student.name} {student.status === "submitted" ? "(đã nộp)" : ""}
+          </option>
+        ))}
+      </select>
+      {selectedStudent && (
+        <p className={`student-start-status ${selectedStudent.status}`}>
+          Trạng thái: {selectedStudent.status === "submitted" ? "đã nộp" : selectedStudent.status === "in_progress" ? "đang làm" : "chưa bắt đầu"}
+        </p>
+      )}
+      <button className="primary-button student-start-button" disabled={saving || !selectedStudentId} onClick={onStart}>
+        {saving ? <LoaderCircle className="spin" size={20} /> : <Send size={20} />}
+        <span>Bắt đầu làm bài</span>
+      </button>
+    </section>
   );
 }
 
