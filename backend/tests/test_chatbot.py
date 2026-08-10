@@ -8,7 +8,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.app.main import _markup_to_chat_text
+from backend.app.main import _friendly_ai_error_message, _markup_to_chat_text
 from backend.app.services.chatbot import _extract_gemini_text, _extract_openai_text, _gemini_key_chain
 
 
@@ -29,6 +29,15 @@ class ChatbotHelpersTest(unittest.TestCase):
 
     def test_gemini_key_chain_dedupes_primary_and_fallback_keys(self) -> None:
         self.assertEqual(("main", "backup"), _gemini_key_chain("main", ["backup", "main"]))
+
+    def test_friendly_ai_error_hides_raw_api_payload(self) -> None:
+        message = _friendly_ai_error_message(
+            RuntimeError('Gemini chatbot loi 400: {"reason":"API_KEY_INVALID","message":"API key not valid."}')
+        )
+
+        self.assertIn("API key", message)
+        self.assertNotIn("googleapis", message)
+        self.assertNotIn("API_KEY_INVALID", message)
 
 
 if __name__ == "__main__":

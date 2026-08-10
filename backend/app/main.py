@@ -368,7 +368,8 @@ def student_assignment_chat(code: str, payload: StudentChatPayload) -> dict[str,
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        print(f"Student chatbot error: {exc}")
+        raise HTTPException(status_code=502, detail=_friendly_ai_error_message(exc)) from exc
 
     return {
         "answer": answer,
@@ -739,6 +740,17 @@ def _clear_warnings(exam: dict[str, Any], codes: set[str]) -> None:
 
 def _chunks(items: list[tuple[str, Path]], size: int) -> list[list[tuple[str, Path]]]:
     return [items[index:index + size] for index in range(0, len(items), size)]
+
+
+def _friendly_ai_error_message(exc: Exception) -> str:
+    text = str(exc).lower()
+    if any(marker in text for marker in ("api_key_invalid", "api key not valid", " 401", " 403", "permission_denied")):
+        return "Trợ lý AI chưa dùng được vì API key đang sai hoặc chưa được cấu hình đúng. Giáo viên cần kiểm tra lại khóa API."
+    if any(marker in text for marker in (" 429", "quota", "rate", "resource_exhausted")):
+        return "Trợ lý AI đang tạm hết lượt dùng miễn phí hoặc bị giới hạn tốc độ. Em thử lại sau ít phút nhé."
+    if any(marker in text for marker in ("timeout", "timed out", "khong ket noi", "unavailable", " 503")):
+        return "Trợ lý AI đang khó kết nối. Em thử lại sau một lát nhé."
+    return "Trợ lý AI chưa trả lời được lúc này. Giáo viên có thể kiểm tra cấu hình AI sau."
 
 
 def _should_split_ocr_batch_error(exc: Exception) -> bool:
