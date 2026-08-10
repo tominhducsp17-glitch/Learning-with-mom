@@ -1788,13 +1788,22 @@ button:disabled {
 }
 
 .warning-list > div {
-  display: flex;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: minmax(150px, 210px) minmax(0, 1fr);
+  gap: 6px 10px;
   padding-top: 5px;
 }
 
 .warning-list strong {
   min-width: 210px;
+}
+
+.warning-list ul {
+  grid-column: 2;
+  margin: 0;
+  padding-left: 18px;
+  color: #8b5b24;
+  line-height: 1.5;
 }
 
 .review-workspace {

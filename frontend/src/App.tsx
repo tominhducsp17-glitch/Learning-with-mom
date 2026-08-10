@@ -712,6 +712,13 @@ function App() {
                 <div key={`${warning.code}-${index}`}>
                   <strong>{warning.code}</strong>
                   <span>{warning.message}</span>
+                  {warning.details && warning.details.length > 0 && (
+                    <ul>
+                      {warning.details.slice(0, 5).map((detail, detailIndex) => (
+                        <li key={`${warning.code}-${index}-${detailIndex}`}>{detail}</li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               ))}
             </div>

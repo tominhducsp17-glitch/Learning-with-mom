@@ -67,6 +67,7 @@ export type ParserWarning = {
   severity: "warning" | "error";
   message: string;
   count?: number;
+  details?: string[];
   section?: SectionType;
   question_number?: number;
 };

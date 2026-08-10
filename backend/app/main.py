@@ -643,12 +643,13 @@ def _auto_ocr_exam_assets(draft_id: str, exam: dict[str, Any]) -> None:
                     gemini_model=settings.gemini_model,
                 )
             except (ValueError, RuntimeError) as exc:
-                if len(batch) > 1:
+                if len(batch) > 1 and _should_split_ocr_batch_error(exc):
                     midpoint = max(1, len(batch) // 2)
                     run_gemini_batch(batch[:midpoint])
                     run_gemini_batch(batch[midpoint:])
                 else:
-                    failures.append(f"{batch_ids[0]}: {exc}")
+                    for asset_id in batch_ids:
+                        failures.append(f"{asset_id}: {exc}")
                 return
 
             for asset_id in batch_ids:
@@ -699,6 +700,7 @@ def _auto_ocr_exam_assets(draft_id: str, exam: dict[str, Any]) -> None:
 
     if replacements:
         _replace_image_tokens_in_exam(exam, replacements)
+    if image_items or failures:
         exam.setdefault("ocr", {})["auto_on_import"] = {
             "provider": settings.ai_provider,
             "model": settings.gemini_model if settings.ai_provider == "gemini" else settings.openai_model,
@@ -706,13 +708,18 @@ def _auto_ocr_exam_assets(draft_id: str, exam: dict[str, Any]) -> None:
             "failed_count": len(failures),
             "workers": worker_count,
             "batch_size": settings.auto_ocr_batch_size if settings.ai_provider == "gemini" else 1,
+            "first_error": failures[0] if failures else "",
         }
     if failures:
+        first_error = failures[0]
         exam.setdefault("warnings", []).append(
             {
                 "code": "AUTO_OCR_PARTIAL",
                 "severity": "warning",
-                "message": f"Auto OCR converted {len(replacements)} assets and failed {len(failures)} assets.",
+                "message": (
+                    f"Auto OCR converted {len(replacements)} assets and failed {len(failures)} assets. "
+                    f"First error: {first_error}"
+                ),
                 "count": len(failures),
                 "details": failures[:20],
             }
@@ -732,6 +739,27 @@ def _clear_warnings(exam: dict[str, Any], codes: set[str]) -> None:
 
 def _chunks(items: list[tuple[str, Path]], size: int) -> list[list[tuple[str, Path]]]:
     return [items[index:index + size] for index in range(0, len(items), size)]
+
+
+def _should_split_ocr_batch_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    non_splittable_markers = (
+        " 401",
+        " 403",
+        " 429",
+        "api key",
+        "apikey",
+        "quota",
+        "rate",
+        "resource_exhausted",
+        "permission_denied",
+        "invalid_argument",
+        "not found",
+        "not_found",
+        "unavailable",
+        " 503",
+    )
+    return not any(marker in text for marker in non_splittable_markers)
 
 
 def _image_token_ids_in_exam(exam: dict[str, Any]) -> list[str]:

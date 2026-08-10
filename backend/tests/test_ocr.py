@@ -15,6 +15,7 @@ from backend.app.services.ocr import (
     _parse_batch_suggestions,
     _parse_suggestion,
 )
+from backend.app.main import _should_split_ocr_batch_error
 
 
 class OcrSuggestionParsingTest(unittest.TestCase):
@@ -91,6 +92,12 @@ class OcrSuggestionParsingTest(unittest.TestCase):
 
     def test_gemini_key_chain_dedupes_primary_and_fallback_keys(self) -> None:
         self.assertEqual(("main", "backup"), _gemini_key_chain(" main ", ("backup", "main", "")))
+
+    def test_batch_ocr_does_not_split_quota_errors(self) -> None:
+        self.assertFalse(_should_split_ocr_batch_error(RuntimeError("Gemini batch OCR loi 429: quota exceeded")))
+
+    def test_batch_ocr_splits_json_shape_errors(self) -> None:
+        self.assertTrue(_should_split_ocr_batch_error(RuntimeError("Model khong tra ve JSON batch hop le.")))
 
 
 if __name__ == "__main__":
