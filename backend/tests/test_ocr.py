@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.app.services.ocr import (
+    _extract_chat_completion_text,
     _extract_gemini_text,
     _extract_output_text,
     _gemini_key_chain,
@@ -34,6 +35,19 @@ class OcrSuggestionParsingTest(unittest.TestCase):
         }
 
         self.assertIn("x^2 + 1", _extract_output_text(payload))
+
+    def test_extract_text_from_chat_completion_payload(self) -> None:
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"latex":"\\\\begin{cases}x=1\\\\\\\\y=2\\\\end{cases}","confidence":0.9}'
+                    }
+                }
+            ]
+        }
+
+        self.assertIn("\\begin{cases}", _extract_chat_completion_text(payload))
 
     def test_extract_text_from_gemini_payload(self) -> None:
         payload = {

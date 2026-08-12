@@ -108,13 +108,27 @@ def health() -> dict[str, Any]:
         },
         "ai": {
             "provider": settings.ai_provider,
+            "provider_chain": settings.ai_provider_chain,
+            "chat_provider_chain": settings.chat_provider_chain,
             "auto_ocr_on_import": settings.auto_ocr_on_import,
             "auto_ocr_max_workers": settings.auto_ocr_max_workers,
             "auto_ocr_batch_size": settings.auto_ocr_batch_size,
             "openai_configured": bool(settings.openai_api_key.strip()),
             "gemini_configured": bool(settings.gemini_api_keys),
             "gemini_key_count": len(settings.gemini_api_keys),
-            "model": settings.gemini_model if settings.ai_provider == "gemini" else settings.openai_model,
+            "openrouter_configured": bool(settings.openrouter_api_key.strip()),
+            "nvidia_configured": bool(settings.nvidia_api_key.strip()),
+            "nvidia_ocr_base_url_configured": bool(settings.nvidia_ocr_base_url),
+            "ocr_providers_available": _configured_ocr_providers(),
+            "chat_providers_available": _configured_chat_providers(),
+            "models": {
+                "openai": settings.openai_model,
+                "gemini": settings.gemini_model,
+                "openrouter_ocr": settings.openrouter_ocr_model,
+                "openrouter_chat": settings.openrouter_chat_model,
+                "nvidia_ocr": settings.nvidia_ocr_model,
+                "nvidia_chat": settings.nvidia_chat_model,
+            },
         },
         "public_base_url": settings.public_base_url,
         "converter": converter,
@@ -225,15 +239,7 @@ def suggest_asset_latex(draft_id: str, payload: OcrAssetPayload) -> dict[str, An
         raise HTTPException(status_code=422, detail="Chua co anh PNG/JPEG/WebP/GIF de OCR.")
 
     try:
-        suggestion = suggest_latex_for_image(
-            image_path,
-            settings.ai_provider,
-            openai_api_key=settings.openai_api_key,
-            openai_model=settings.openai_model,
-            gemini_api_key=settings.gemini_api_key,
-            gemini_api_keys=settings.gemini_api_keys,
-            gemini_model=settings.gemini_model,
-        )
+        suggestion = _suggest_latex_for_image_with_fallback(image_path)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -354,16 +360,10 @@ def student_assignment_chat(code: str, payload: StudentChatPayload) -> dict[str,
         student_answer=(submission.get("answers") or {}).get(f"{payload.section_type}:{payload.question_number}"),
     )
     try:
-        answer = ask_chatbot(
-            provider=settings.ai_provider,
+        answer = _ask_chatbot_with_fallback(
             message=payload.message,
             context=context,
             history=[item.model_dump() for item in payload.history],
-            openai_api_key=settings.openai_api_key,
-            openai_model=settings.openai_model,
-            gemini_api_key=settings.gemini_api_key,
-            gemini_api_keys=settings.gemini_api_keys,
-            gemini_model=settings.gemini_model,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -612,6 +612,129 @@ def _is_supported_ocr_image(path: Path) -> bool:
     return path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
+def _configured_ocr_providers() -> tuple[str, ...]:
+    providers: list[str] = []
+    for provider in settings.ai_provider_chain:
+        if provider == "gemini" and settings.gemini_api_keys:
+            providers.append(provider)
+        elif provider == "openai" and settings.openai_api_key.strip():
+            providers.append(provider)
+        elif provider == "openrouter" and settings.openrouter_api_key.strip():
+            providers.append(provider)
+        elif provider == "nvidia" and settings.nvidia_api_key.strip() and settings.nvidia_ocr_base_url:
+            providers.append(provider)
+    return tuple(providers)
+
+
+def _configured_chat_providers() -> tuple[str, ...]:
+    providers: list[str] = []
+    for provider in settings.chat_provider_chain:
+        if provider == "gemini" and settings.gemini_api_keys:
+            providers.append(provider)
+        elif provider == "openai" and settings.openai_api_key.strip():
+            providers.append(provider)
+        elif provider == "openrouter" and settings.openrouter_api_key.strip():
+            providers.append(provider)
+        elif provider == "nvidia" and settings.nvidia_api_key.strip():
+            providers.append(provider)
+    return tuple(providers)
+
+
+def _provider_model_name(provider: str, *, kind: str) -> str:
+    if provider == "gemini":
+        return settings.gemini_model
+    if provider == "openai":
+        return settings.openai_model
+    if provider == "openrouter":
+        return settings.openrouter_chat_model if kind == "chat" else settings.openrouter_ocr_model
+    if provider == "nvidia":
+        return settings.nvidia_chat_model if kind == "chat" else settings.nvidia_ocr_model
+    return ""
+
+
+def _suggest_latex_for_image_with_provider(provider: str, image_path: Path) -> dict[str, Any]:
+    return suggest_latex_for_image(
+        image_path,
+        provider,
+        openai_api_key=settings.openai_api_key,
+        openai_model=settings.openai_model,
+        gemini_api_key=settings.gemini_api_key,
+        gemini_api_keys=settings.gemini_api_keys,
+        gemini_model=settings.gemini_model,
+        openrouter_api_key=settings.openrouter_api_key,
+        openrouter_model=settings.openrouter_ocr_model,
+        nvidia_api_key=settings.nvidia_api_key,
+        nvidia_model=settings.nvidia_ocr_model,
+        nvidia_base_url=settings.nvidia_ocr_base_url,
+    )
+
+
+def _suggest_latex_for_image_with_fallback(
+    image_path: Path,
+    providers: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    provider_chain = providers or _configured_ocr_providers()
+    if not provider_chain:
+        raise ValueError("Chua cau hinh provider OCR kha dung.")
+    errors: list[str] = []
+    for provider in provider_chain:
+        try:
+            suggestion = _suggest_latex_for_image_with_provider(provider, image_path)
+            suggestion["provider"] = provider
+            suggestion["model"] = _provider_model_name(provider, kind="ocr")
+            return suggestion
+        except (ValueError, FileNotFoundError, RuntimeError) as exc:
+            errors.append(f"{provider}: {exc}")
+    raise RuntimeError("; ".join(errors[-3:]))
+
+
+def _ask_chatbot_with_provider(
+    provider: str,
+    *,
+    message: str,
+    context: str,
+    history: list[dict[str, str]],
+) -> str:
+    return ask_chatbot(
+        provider=provider,
+        message=message,
+        context=context,
+        history=history,
+        openai_api_key=settings.openai_api_key,
+        openai_model=settings.openai_model,
+        gemini_api_key=settings.gemini_api_key,
+        gemini_api_keys=settings.gemini_api_keys,
+        gemini_model=settings.gemini_model,
+        openrouter_api_key=settings.openrouter_api_key,
+        openrouter_model=settings.openrouter_chat_model,
+        nvidia_api_key=settings.nvidia_api_key,
+        nvidia_model=settings.nvidia_chat_model,
+    )
+
+
+def _ask_chatbot_with_fallback(
+    *,
+    message: str,
+    context: str,
+    history: list[dict[str, str]],
+) -> str:
+    provider_chain = _configured_chat_providers()
+    if not provider_chain:
+        raise ValueError("Chua cau hinh provider chatbot kha dung.")
+    errors: list[str] = []
+    for provider in provider_chain:
+        try:
+            return _ask_chatbot_with_provider(
+                provider,
+                message=message,
+                context=context,
+                history=history,
+            )
+        except (ValueError, RuntimeError) as exc:
+            errors.append(f"{provider}: {exc}")
+    raise RuntimeError("; ".join(errors[-3:]))
+
+
 def _auto_ocr_exam_assets(draft_id: str, exam: dict[str, Any]) -> None:
     asset_ids = _image_token_ids_in_exam(exam)
     if not asset_ids:
@@ -632,13 +755,17 @@ def _auto_ocr_exam_assets(draft_id: str, exam: dict[str, Any]) -> None:
             continue
         image_items.append((asset_id, image_path))
 
-    if settings.ai_provider == "gemini":
+    ocr_providers = _configured_ocr_providers()
+    if not ocr_providers:
+        failures.extend(f"{asset_id}: no configured OCR provider" for asset_id, _ in image_items)
+        worker_count = 0
+    elif ocr_providers[0] == "gemini":
         def run_gemini_batch(batch: list[tuple[str, Path]]) -> None:
             batch_ids = [asset_id for asset_id, _ in batch]
             try:
                 suggestions = suggest_latex_for_image_batch(
                     batch,
-                    settings.ai_provider,
+                    "gemini",
                     gemini_api_key=settings.gemini_api_key,
                     gemini_api_keys=settings.gemini_api_keys,
                     gemini_model=settings.gemini_model,
@@ -649,19 +776,43 @@ def _auto_ocr_exam_assets(draft_id: str, exam: dict[str, Any]) -> None:
                     run_gemini_batch(batch[:midpoint])
                     run_gemini_batch(batch[midpoint:])
                 else:
-                    for asset_id in batch_ids:
-                        failures.append(f"{asset_id}: {exc}")
+                    fallback_providers = ocr_providers[1:]
+                    for asset_id, image_path in batch:
+                        if not fallback_providers:
+                            failures.append(f"{asset_id}: {exc}")
+                            continue
+                        try:
+                            suggestion = _suggest_latex_for_image_with_fallback(image_path, fallback_providers)
+                        except (ValueError, RuntimeError) as fallback_exc:
+                            failures.append(f"{asset_id}: {exc}; fallback: {fallback_exc}")
+                            continue
+                        latex = str(suggestion.get("latex", "")).strip()
+                        if latex:
+                            replacements[asset_id] = math_replacement_token(latex)
+                        else:
+                            failures.append(f"{asset_id}: empty fallback OCR result")
                 return
 
+            image_map = {asset_id: image_path for asset_id, image_path in batch}
             for asset_id in batch_ids:
                 suggestion = suggestions.get(asset_id)
                 if not suggestion:
-                    failures.append(f"{asset_id}: missing batch OCR result")
-                    continue
+                    try:
+                        suggestion = _suggest_latex_for_image_with_fallback(image_map[asset_id], ocr_providers)
+                    except (ValueError, RuntimeError) as exc:
+                        failures.append(f"{asset_id}: missing batch OCR result; fallback: {exc}")
+                        continue
                 latex = str(suggestion.get("latex", "")).strip()
                 if not latex:
-                    failures.append(f"{asset_id}: empty OCR result")
-                    continue
+                    try:
+                        suggestion = _suggest_latex_for_image_with_fallback(image_map[asset_id], ocr_providers)
+                    except (ValueError, RuntimeError) as exc:
+                        failures.append(f"{asset_id}: empty OCR result; fallback: {exc}")
+                        continue
+                    latex = str(suggestion.get("latex", "")).strip()
+                    if not latex:
+                        failures.append(f"{asset_id}: empty fallback OCR result")
+                        continue
                 replacements[asset_id] = math_replacement_token(latex)
 
         for batch in _chunks(image_items, settings.auto_ocr_batch_size):
@@ -673,15 +824,7 @@ def _auto_ocr_exam_assets(draft_id: str, exam: dict[str, Any]) -> None:
         def ocr_one(item: tuple[str, Path]) -> tuple[str, str | None, str | None]:
             asset_id, image_path = item
             try:
-                suggestion = suggest_latex_for_image(
-                    image_path,
-                    settings.ai_provider,
-                    openai_api_key=settings.openai_api_key,
-                    openai_model=settings.openai_model,
-                    gemini_api_key=settings.gemini_api_key,
-                    gemini_api_keys=settings.gemini_api_keys,
-                    gemini_model=settings.gemini_model,
-                )
+                suggestion = _suggest_latex_for_image_with_fallback(image_path, ocr_providers)
             except (ValueError, FileNotFoundError, RuntimeError) as exc:
                 return asset_id, None, str(exc)
 
@@ -703,12 +846,13 @@ def _auto_ocr_exam_assets(draft_id: str, exam: dict[str, Any]) -> None:
         _replace_image_tokens_in_exam(exam, replacements)
     if image_items or failures:
         exam.setdefault("ocr", {})["auto_on_import"] = {
-            "provider": settings.ai_provider,
-            "model": settings.gemini_model if settings.ai_provider == "gemini" else settings.openai_model,
+            "provider": ",".join(ocr_providers) if ocr_providers else "",
+            "model": ",".join(_provider_model_name(provider, kind="ocr") for provider in ocr_providers),
+            "provider_chain": ocr_providers,
             "converted_count": len(replacements),
             "failed_count": len(failures),
             "workers": worker_count,
-            "batch_size": settings.auto_ocr_batch_size if settings.ai_provider == "gemini" else 1,
+            "batch_size": settings.auto_ocr_batch_size if ocr_providers[:1] == ("gemini",) else 1,
             "first_error": failures[0] if failures else "",
         }
     if failures:

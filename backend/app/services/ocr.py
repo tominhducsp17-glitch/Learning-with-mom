@@ -42,6 +42,11 @@ def suggest_latex_for_image(
     gemini_api_key: str = "",
     gemini_api_keys: tuple[str, ...] | list[str] = (),
     gemini_model: str = "gemini-3.1-flash-lite",
+    openrouter_api_key: str = "",
+    openrouter_model: str = "nvidia/nemotron-nano-12b-v2-vl:free",
+    nvidia_api_key: str = "",
+    nvidia_model: str = "nvidia/nemotron-ocr-v2",
+    nvidia_base_url: str = "",
 ) -> dict[str, Any]:
     if not image_path.is_file():
         raise FileNotFoundError(str(image_path))
@@ -62,7 +67,11 @@ def suggest_latex_for_image(
         )
     if provider == "openai":
         return _suggest_latex_with_openai(image_base64, mime_type, openai_api_key, openai_model)
-    raise ValueError(f"AI_PROVIDER khong ho tro: {provider}. Hay dung openai hoac gemini.")
+    if provider == "openrouter":
+        return _suggest_latex_with_openrouter(image_base64, mime_type, openrouter_api_key, openrouter_model)
+    if provider == "nvidia":
+        return _suggest_latex_with_nvidia_ocr(image_base64, mime_type, nvidia_api_key, nvidia_model, nvidia_base_url)
+    raise ValueError(f"AI_PROVIDER khong ho tro: {provider}. Hay dung openai, gemini, openrouter hoac nvidia.")
 
 
 def suggest_latex_for_image_batch(
@@ -74,6 +83,11 @@ def suggest_latex_for_image_batch(
     gemini_api_key: str = "",
     gemini_api_keys: tuple[str, ...] | list[str] = (),
     gemini_model: str = "gemini-3.1-flash-lite",
+    openrouter_api_key: str = "",
+    openrouter_model: str = "nvidia/nemotron-nano-12b-v2-vl:free",
+    nvidia_api_key: str = "",
+    nvidia_model: str = "nvidia/nemotron-ocr-v2",
+    nvidia_base_url: str = "",
 ) -> dict[str, dict[str, Any]]:
     if not images:
         return {}
@@ -87,6 +101,11 @@ def suggest_latex_for_image_batch(
                 gemini_api_key=gemini_api_key,
                 gemini_api_keys=gemini_api_keys,
                 gemini_model=gemini_model,
+                openrouter_api_key=openrouter_api_key,
+                openrouter_model=openrouter_model,
+                nvidia_api_key=nvidia_api_key,
+                nvidia_model=nvidia_model,
+                nvidia_base_url=nvidia_base_url,
             )
             for asset_id, image_path in images
         }
@@ -147,6 +166,99 @@ def _suggest_latex_with_openai(image_base64: str, mime_type: str, api_key: str, 
     suggestion = _parse_suggestion(raw_text)
     suggestion["raw_text"] = raw_text
     return suggestion
+
+
+def _suggest_latex_with_openrouter(image_base64: str, mime_type: str, api_key: str, model: str) -> dict[str, Any]:
+    if not api_key.strip():
+        raise ValueError("OPENROUTER_API_KEY chua duoc cau hinh.")
+    data_url = f"data:{mime_type};base64,{image_base64}"
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": OCR_PROMPT},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ],
+        "temperature": 0,
+        "max_tokens": 700,
+    }
+    request = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://learning-with-mom.local",
+            "X-Title": "Hoc cung co Tuyet",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenRouter OCR loi {exc.code}: {detail[:800]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Khong ket noi duoc OpenRouter OCR: {exc.reason}") from exc
+
+    raw_text = _extract_chat_completion_text(data)
+    suggestion = _parse_suggestion(raw_text)
+    suggestion["raw_text"] = raw_text
+    return suggestion
+
+
+def _suggest_latex_with_nvidia_ocr(
+    image_base64: str,
+    mime_type: str,
+    api_key: str,
+    model: str,
+    base_url: str,
+) -> dict[str, Any]:
+    if not base_url.strip():
+        raise ValueError("NVIDIA_OCR_BASE_URL chua duoc cau hinh.")
+    endpoint = base_url.strip().rstrip("/") + "/v1/ocr"
+    data_url = f"data:{mime_type};base64,{image_base64}"
+    payload = {
+        "model": model,
+        "input": [{"type": "image_url", "url": data_url}],
+        "merge_levels": ["word"],
+    }
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    if api_key.strip():
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"NVIDIA OCR loi {exc.code}: {detail[:800]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Khong ket noi duoc NVIDIA OCR: {exc.reason}") from exc
+
+    raw_text = _extract_nvidia_ocr_text(data)
+    if not raw_text:
+        raise RuntimeError("NVIDIA OCR khong tra ve noi dung.")
+    return {
+        "latex": raw_text,
+        "confidence": 0.4,
+        "notes": "NVIDIA OCR fallback tra ve text OCR tho; giao vien nen kiem tra truoc khi dung.",
+        "needs_review": True,
+        "raw_text": raw_text,
+    }
 
 
 def _suggest_latex_with_gemini(image_base64: str, mime_type: str, api_key: str, model: str) -> dict[str, Any]:
@@ -342,6 +454,36 @@ def _extract_output_text(data: dict[str, Any]) -> str:
             if isinstance(text, str):
                 parts.append(text)
     return "\n".join(parts).strip()
+
+
+def _extract_chat_completion_text(data: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for choice in data.get("choices", []):
+        message = choice.get("message", {})
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+    return "\n".join(parts).strip()
+
+
+def _extract_nvidia_ocr_text(data: dict[str, Any]) -> str:
+    tokens: list[str] = []
+    for item in data.get("data", []):
+        detections = item.get("text_detections", [])
+        for detection in detections:
+            prediction = detection.get("text_prediction", {})
+            text = prediction.get("text")
+            if isinstance(text, str) and text.strip():
+                tokens.append(text.strip())
+    if tokens:
+        return " ".join(tokens).strip()
+    if isinstance(data.get("text"), str):
+        return data["text"].strip()
+    return ""
 
 
 def _parse_suggestion(raw_text: str) -> dict[str, Any]:

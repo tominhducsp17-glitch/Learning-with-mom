@@ -52,6 +52,8 @@ def _bool_from_env(name: str, default: bool) -> bool:
 class Settings:
     app_env: str
     ai_provider: str
+    ai_provider_chain: tuple[str, ...]
+    chat_provider_chain: tuple[str, ...]
     auto_ocr_on_import: bool
     auto_ocr_max_workers: int
     auto_ocr_batch_size: int
@@ -67,12 +69,31 @@ class Settings:
     gemini_api_key: str
     gemini_api_keys: tuple[str, ...]
     gemini_model: str
+    openrouter_api_key: str
+    openrouter_ocr_model: str
+    openrouter_chat_model: str
+    nvidia_api_key: str
+    nvidia_ocr_model: str
+    nvidia_ocr_base_url: str
+    nvidia_chat_model: str
 
 
 def _list_from_env(name: str) -> tuple[str, ...]:
     raw_value = os.getenv(name, "")
     values = [item.strip() for item in raw_value.replace("\n", ",").split(",")]
     return tuple(item for item in values if item)
+
+
+def _provider_chain_from_env(name: str, fallback_provider: str) -> tuple[str, ...]:
+    providers = _list_from_env(name)
+    if not providers:
+        providers = (fallback_provider,)
+    cleaned: list[str] = []
+    for provider in providers:
+        value = provider.strip().lower()
+        if value and value not in cleaned:
+            cleaned.append(value)
+    return tuple(cleaned)
 
 
 def get_settings() -> Settings:
@@ -90,6 +111,8 @@ def get_settings() -> Settings:
     return Settings(
         app_env=os.getenv("APP_ENV", "local"),
         ai_provider=os.getenv("AI_PROVIDER", "openai").strip().lower(),
+        ai_provider_chain=_provider_chain_from_env("AI_PROVIDER_CHAIN", os.getenv("AI_PROVIDER", "openai").strip().lower()),
+        chat_provider_chain=_provider_chain_from_env("CHAT_PROVIDER_CHAIN", os.getenv("AI_PROVIDER", "openai").strip().lower()),
         auto_ocr_on_import=_bool_from_env("AUTO_OCR_ON_IMPORT", False),
         auto_ocr_max_workers=max(1, _int_from_env("AUTO_OCR_MAX_WORKERS", 6)),
         auto_ocr_batch_size=max(1, _int_from_env("AUTO_OCR_BATCH_SIZE", 20)),
@@ -105,4 +128,11 @@ def get_settings() -> Settings:
         gemini_api_key=gemini_api_key,
         gemini_api_keys=tuple(gemini_api_keys),
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+        openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
+        openrouter_ocr_model=os.getenv("OPENROUTER_OCR_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free"),
+        openrouter_chat_model=os.getenv("OPENROUTER_CHAT_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free"),
+        nvidia_api_key=os.getenv("NVIDIA_API_KEY", "").strip(),
+        nvidia_ocr_model=os.getenv("NVIDIA_OCR_MODEL", "nvidia/nemotron-ocr-v2"),
+        nvidia_ocr_base_url=os.getenv("NVIDIA_OCR_BASE_URL", "").strip().rstrip("/"),
+        nvidia_chat_model=os.getenv("NVIDIA_CHAT_MODEL", "nvidia/nemotron-3-nano-30b-a3b"),
     )

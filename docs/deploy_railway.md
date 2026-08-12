@@ -49,10 +49,24 @@ MATH_EXAM_CUSTOM_FONT_DIR=/usr/local/share/fonts/mathexam
 AUTO_OCR_ON_IMPORT=true
 AUTO_OCR_MAX_WORKERS=2
 AUTO_OCR_BATCH_SIZE=10
+
 AI_PROVIDER=gemini
+AI_PROVIDER_CHAIN=gemini,openrouter,nvidia
+CHAT_PROVIDER_CHAIN=gemini,openrouter,nvidia
+
 GEMINI_API_KEY=your_gemini_key_here
 GEMINI_API_KEYS=
 GEMINI_MODEL=gemini-3.1-flash-lite
+
+OPENROUTER_API_KEY=
+OPENROUTER_OCR_MODEL=nvidia/nemotron-nano-12b-v2-vl:free
+OPENROUTER_CHAT_MODEL=nvidia/nemotron-nano-12b-v2-vl:free
+
+NVIDIA_API_KEY=
+NVIDIA_OCR_MODEL=nvidia/nemotron-ocr-v2
+NVIDIA_OCR_BASE_URL=
+NVIDIA_CHAT_MODEL=nvidia/nemotron-3-nano-30b-a3b
+
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5-mini
 ```
@@ -65,6 +79,35 @@ AUTO_OCR_BATCH_SIZE=10
 ```
 
 This is slower than local Docker but less likely to run out of memory.
+
+### Provider fallback
+
+OCR and chatbot now use separate fallback chains:
+
+- `AI_PROVIDER_CHAIN`: used for formula OCR during import/manual OCR.
+- `CHAT_PROVIDER_CHAIN`: used for the student explanation chatbot after submission.
+
+Recommended trial setup:
+
+```env
+AI_PROVIDER_CHAIN=gemini,openrouter,nvidia
+CHAT_PROVIDER_CHAIN=gemini,openrouter,nvidia
+```
+
+Notes:
+
+- Gemini runs first because it has been tested most with the Word formula workflow.
+- OpenRouter is the easiest extra fallback. Add `OPENROUTER_API_KEY` and keep:
+
+```env
+OPENROUTER_OCR_MODEL=nvidia/nemotron-nano-12b-v2-vl:free
+OPENROUTER_CHAT_MODEL=nvidia/nemotron-nano-12b-v2-vl:free
+```
+
+- NVIDIA chatbot can run with only `NVIDIA_API_KEY`.
+- NVIDIA direct OCR uses `nvidia/nemotron-ocr-v2`, but it needs a live NIM OCR endpoint. Leave `NVIDIA_OCR_BASE_URL` empty unless you have deployed/hosted that endpoint; the app will skip NVIDIA for OCR when this URL is empty.
+
+For production stability later, use one paid provider with a clear monthly budget, then keep the free keys only as emergency fallback.
 
 ## Generate a public URL
 
