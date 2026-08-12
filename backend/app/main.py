@@ -921,6 +921,18 @@ def _should_split_ocr_batch_error(exc: Exception) -> bool:
 def _image_token_ids_in_exam(exam: dict[str, Any]) -> list[str]:
     ids: list[str] = []
     seen: set[str] = set()
+    illustration_ids = {
+        str(block.get("asset_id"))
+        for section in exam.get("sections", [])
+        for question in section.get("questions", [])
+        for blocks in (
+            [question.get("prompt_blocks", [])]
+            + list((question.get("options") or {}).values())
+            + list((question.get("statements") or {}).values())
+        )
+        for block in blocks
+        if block.get("type") == "image" and block.get("display_mode") == "block"
+    }
     pattern = re.compile(r"\[img:\$([A-Za-z0-9_-]+)\$\]")
     for section in exam.get("sections", []):
         for question in section.get("questions", []):
@@ -930,7 +942,7 @@ def _image_token_ids_in_exam(exam: dict[str, Any]) -> list[str]:
             for markup in markup_values:
                 for match in pattern.finditer(str(markup)):
                     asset_id = match.group(1)
-                    if asset_id not in seen:
+                    if asset_id not in illustration_ids and asset_id not in seen:
                         seen.add(asset_id)
                         ids.append(asset_id)
     return ids

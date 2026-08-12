@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -49,10 +50,44 @@ class DocxParserGoldenTest(unittest.TestCase):
         }
         self.assertEqual(self.expected["sections"]["short_answer"]["answer_key"], short_answers)
 
-        self.assertEqual(self.expected["expected_assets"]["wmf_count"], len(parsed["assets"]))
-        self.assertTrue(all(asset["extension"] == ".wmf" for asset in parsed["assets"]))
-        self.assertTrue(all(asset["status"] == "placeholder" for asset in parsed["assets"]))
+        extensions = Counter(asset["extension"] for asset in parsed["assets"])
+        self.assertEqual(self.expected["expected_assets"]["total_count"], len(parsed["assets"]))
+        self.assertEqual(self.expected["expected_assets"]["wmf_count"], extensions[".wmf"])
+        self.assertEqual(self.expected["expected_assets"]["png_count"], extensions[".png"])
+        self.assertTrue(
+            all(asset["status"] == "placeholder" for asset in parsed["assets"] if asset["extension"] == ".wmf")
+        )
+        self.assertTrue(
+            all(asset["status"] == "ready" for asset in parsed["assets"] if asset["extension"] == ".png")
+        )
         self.assertTrue(any(warning["code"] == "UNCONVERTED_VECTOR_IMAGE" for warning in parsed["warnings"]))
+
+    def test_pasted_question_images_are_block_illustrations_before_answers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parsed = parse_docx_exam(self.sample_path, assets_dir=Path(tmp) / "assets")
+
+        sections = {section["type"]: section for section in parsed["sections"]}
+        expected_questions = (("single_choice", 1), ("single_choice", 3), ("short_answer", 3))
+
+        for section_type, number in expected_questions:
+            with self.subTest(section=section_type, question=number):
+                question = next(item for item in sections[section_type]["questions"] if item["number"] == number)
+                illustration = question["prompt_blocks"][-1]
+                self.assertEqual("image", illustration["type"])
+                self.assertEqual(".png", illustration["extension"])
+                self.assertEqual("ready", illustration["status"])
+                self.assertEqual("block", illustration["display_mode"])
+                self.assertTrue(question["prompt_markup"].endswith(f"[img:${illustration['asset_id']}$]"))
+
+        self.assertEqual(4, len(sections["single_choice"]["questions"][0]["options"]))
+        self.assertEqual(4, len(sections["single_choice"]["questions"][2]["options"]))
+
+        all_illustrations = [
+            block
+            for block in _image_blocks(parsed)
+            if block.get("display_mode") == "block"
+        ]
+        self.assertEqual(3, len(all_illustrations))
 
     def test_inline_images_keep_word_display_size(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -79,7 +114,8 @@ class DocxParserGoldenTest(unittest.TestCase):
         first_question = parsed["sections"][0]["questions"][0]
         self.assertIn("[img:$img_0001$]", first_question["prompt_markup"])
         self.assertIn("[img:$img_0002$]", first_question["prompt_markup"])
-        self.assertEqual("[img:$img_0004$].", first_question["options_markup"]["A"])
+        option_a_image = next(block for block in first_question["options"]["A"] if block.get("type") == "image")
+        self.assertEqual(f"[img:${option_a_image['asset_id']}$].", first_question["options_markup"]["A"])
 
         assets_by_id = parsed["assets_by_id"]
         self.assertIn("img_0001", assets_by_id)
@@ -123,6 +159,7 @@ class DocxParserGoldenTest(unittest.TestCase):
         self.assertIn("PHẦN III", html)
         self.assertIn("UNCONVERTED_VECTOR_IMAGE", html)
         self.assertIn("<img", html)
+        self.assertEqual(3, html.count('class="question-illustration"'))
         self.assertIn(".placeholder.svg", html)
         self.assertNotIn("file:///", html)
 

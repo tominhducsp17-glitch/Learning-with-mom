@@ -113,6 +113,14 @@ def _render_document(parsed_exam: dict[str, Any], output_path: Path) -> str:
       vertical-align: middle;
       margin: 0 2px;
     }}
+    .question-illustration {{
+      display: block;
+      width: auto;
+      max-width: 100%;
+      height: auto;
+      margin: 12px 0 16px;
+      vertical-align: initial;
+    }}
     .option, .statement {{
       margin: 6px 0 0 18px;
     }}
@@ -189,7 +197,8 @@ def _render_blocks(blocks: list[dict[str, Any]], output_path: Path) -> str:
             src = _image_src(str(block.get("render_path") or ""), output_path)
             alt = html.escape(str(block.get("asset_id", "inline asset")))
             style = _image_style(block)
-            rendered.append(f'<img class="inline-asset" src="{src}" alt="{alt}" title="{alt}"{style}>')
+            css_class = "question-illustration" if block.get("display_mode") == "block" else "inline-asset"
+            rendered.append(f'<img class="{css_class}" src="{src}" alt="{alt}" title="{alt}"{style}>')
     return "".join(rendered)
 
 
@@ -198,6 +207,8 @@ def _image_style(block: dict[str, Any]) -> str:
     height = block.get("display_height_px")
     if not isinstance(width, (int, float)) or not isinstance(height, (int, float)):
         return ""
+    if block.get("display_mode") == "block":
+        return f' style="width:{width:.2f}px;max-width:100%;height:auto"'
     return f' style="width:{width:.2f}px;height:{height:.2f}px"'
 
 

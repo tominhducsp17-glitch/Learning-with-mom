@@ -1236,13 +1236,17 @@ function MarkupPanel({
   }
 
   const combined = entries.map(([label, value]) => `# ${label}\n${value}`).join("\n\n");
+  const illustrationIds = useMemo(() => questionImageBlocks(question)
+    .filter((block) => block.display_mode === "block")
+    .map((block) => block.asset_id), [question]);
   const assetIds = useMemo(() => {
     const ids = new Set<string>();
+    const illustrations = new Set(illustrationIds);
     for (const match of combined.matchAll(/\[img:\$([A-Za-z0-9_-]+)\$\]/g)) {
-      ids.add(match[1]);
+      if (!illustrations.has(match[1])) ids.add(match[1]);
     }
     return Array.from(ids);
-  }, [combined]);
+  }, [combined, illustrationIds]);
   const [ocrStates, setOcrStates] = useState<Record<string, OcrAssetState>>({});
   const [applyingAll, setApplyingAll] = useState(false);
 
@@ -1436,12 +1440,7 @@ function Blocks({
     <div className={`content-blocks ${editMode ? "is-editing" : ""}`}>
       {blocks.map((block, index) => {
         if (block.type === "image") {
-          return (
-            <span className="asset-wrap" key={`${block.asset_id}-${index}`} style={imageWrapStyle(block)}>
-              <img src={block.render_path} alt={`Công thức ${block.asset_id}`} title={block.asset_id} style={imageStyle(block)} />
-              {block.status === "placeholder" && <ImageOff size={13} aria-label="Ảnh placeholder" />}
-            </span>
-          );
+          return <QuestionImage block={block} key={`${block.asset_id}-${index}`} />;
         }
         if (editMode) {
           return (
@@ -1495,10 +1494,7 @@ function renderMarkup(markup: string, blocks: ContentBlock[]) {
 
     if (imageBlock) {
       nodes.push(
-        <span className="asset-wrap" key={`${assetId}-${nodeIndex++}`} style={imageWrapStyle(imageBlock)}>
-          <img src={imageBlock.render_path} alt={`Công thức ${assetId}`} title={assetId} style={imageStyle(imageBlock)} />
-          {imageBlock.status === "placeholder" && <ImageOff size={13} aria-label="Ảnh placeholder" />}
-        </span>,
+        <QuestionImage block={imageBlock} key={`${assetId}-${nodeIndex++}`} />,
       );
     } else {
       nodes.push(<span key={`missing-${nodeIndex++}`}>{match[0]}</span>);
@@ -1511,6 +1507,31 @@ function renderMarkup(markup: string, blocks: ContentBlock[]) {
     nodes.push(<span key={`text-${nodeIndex++}`}>{unescapeMarkupText(markup.slice(cursor))}</span>);
   }
   return nodes;
+}
+
+function QuestionImage({ block }: { block: Extract<ContentBlock, { type: "image" }> }) {
+  const isIllustration = block.display_mode === "block";
+  return (
+    <span
+      className={`asset-wrap ${isIllustration ? "is-illustration" : ""}`}
+      style={isIllustration ? undefined : imageWrapStyle(block)}
+    >
+      <img
+        src={block.render_path}
+        alt={`${isIllustration ? "Hình minh họa" : "Công thức"} ${block.asset_id}`}
+        title={block.asset_id}
+        style={imageStyle(block)}
+      />
+      {block.status === "placeholder" && <ImageOff size={13} aria-label="Ảnh placeholder" />}
+    </span>
+  );
+}
+
+function questionImageBlocks(question: Question) {
+  const blocks = [...question.prompt_blocks];
+  Object.values(question.options ?? {}).forEach((items) => blocks.push(...items));
+  Object.values(question.statements ?? {}).forEach((items) => blocks.push(...items));
+  return blocks.filter((block): block is Extract<ContentBlock, { type: "image" }> => block.type === "image");
 }
 
 function renderChatContent(content: string) {
@@ -2792,6 +2813,14 @@ function formatRemainingTime(totalSeconds: number) {
 }
 
 function imageStyle(block: Extract<ContentBlock, { type: "image" }>): CSSProperties | undefined {
+  if (block.display_mode === "block") {
+    if (!block.display_width_px) return undefined;
+    return {
+      width: `${block.display_width_px}px`,
+      maxWidth: "100%",
+      height: "auto",
+    };
+  }
   if (!block.display_width_px || !block.display_height_px) return undefined;
   return {
     width: `${block.display_width_px}px`,

@@ -50,9 +50,14 @@
   "asset_id": "img_0001",
   "render_path": "storage/extracted-assets/de-mau-azota/img_0001.placeholder.svg",
   "original_path": "storage/extracted-assets/de-mau-azota/img_0001.wmf",
-  "status": "placeholder"
+  "status": "placeholder",
+  "display_mode": "inline"
 }
 ```
+
+`display_mode` la truong tuy chon. Anh PNG/JPG/GIF/SVG trong mot paragraph doc lap cua Word
+duoc danh dau `block` de hien thi dung vi tri trong de bai; anh cong thuc va du lieu cu khong co
+truong nay duoc xem la `inline`.
 
 ## Warnings bat buoc
 

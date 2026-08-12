@@ -10,6 +10,7 @@ export type ImageBlock = {
   original_path: string;
   extension: string;
   status: string;
+  display_mode?: "inline" | "block";
   extent_emu?: {
     cx: number;
     cy: number;
@@ -39,6 +40,7 @@ export type AssetMapEntry = Record<string, unknown> & {
     };
     display_width_px?: number;
     display_height_px?: number;
+    display_mode?: "inline" | "block";
   }>;
 };
 

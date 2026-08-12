@@ -16,7 +16,7 @@ from backend.app.services.ocr import (
     _parse_batch_suggestions,
     _parse_suggestion,
 )
-from backend.app.main import _should_split_ocr_batch_error
+from backend.app.main import _image_token_ids_in_exam, _should_split_ocr_batch_error
 
 
 class OcrSuggestionParsingTest(unittest.TestCase):
@@ -112,6 +112,21 @@ class OcrSuggestionParsingTest(unittest.TestCase):
 
     def test_batch_ocr_splits_json_shape_errors(self) -> None:
         self.assertTrue(_should_split_ocr_batch_error(RuntimeError("Model khong tra ve JSON batch hop le.")))
+
+    def test_auto_ocr_skips_question_illustrations(self) -> None:
+        exam = {
+            "sections": [{
+                "questions": [{
+                    "prompt_markup": "[img:$img_formula$][img:$img_graph$]",
+                    "prompt_blocks": [
+                        {"type": "image", "asset_id": "img_formula"},
+                        {"type": "image", "asset_id": "img_graph", "display_mode": "block"},
+                    ],
+                }],
+            }],
+        }
+
+        self.assertEqual(["img_formula"], _image_token_ids_in_exam(exam))
 
 
 if __name__ == "__main__":

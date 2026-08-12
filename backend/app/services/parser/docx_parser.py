@@ -27,6 +27,7 @@ NS = {
 }
 
 DISPLAYABLE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg"}
+ILLUSTRATION_EXTENSIONS = DISPLAYABLE_EXTENSIONS
 VECTOR_EXTENSIONS = {".wmf", ".emf"}
 
 
@@ -340,7 +341,7 @@ def _read_body_items(body: ET.Element, context: AssetContext) -> list[BodyItem]:
     for child in body:
         tag = _local_name(child.tag)
         if tag == "p":
-            blocks = _paragraph_blocks(child, context)
+            blocks = _mark_standalone_illustrations(_paragraph_blocks(child, context))
             if _blocks_text(blocks).strip() or _has_image(blocks):
                 items.append(BodyItem(kind="paragraph", blocks=blocks))
         elif tag == "tbl":
@@ -353,6 +354,23 @@ def _paragraph_blocks(paragraph: ET.Element, context: AssetContext) -> list[dict
     for child in paragraph:
         _append_inline_blocks(child, blocks, context)
     return _merge_text_blocks(blocks)
+
+
+def _mark_standalone_illustrations(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mark browser-friendly images that occupy their own Word paragraph."""
+    if _blocks_text(blocks).strip():
+        return blocks
+
+    image_blocks = [block for block in blocks if block.get("type") == "image"]
+    if not image_blocks or not all(
+        str(block.get("extension", "")).lower() in ILLUSTRATION_EXTENSIONS
+        for block in image_blocks
+    ):
+        return blocks
+
+    for block in image_blocks:
+        block["display_mode"] = "block"
+    return image_blocks
 
 
 def _append_inline_blocks(
@@ -764,7 +782,7 @@ def _asset_map(assets: list[dict[str, Any]], sections: list[dict[str, Any]]) -> 
         asset = mapped.setdefault(asset_id, {"asset_id": asset_id})
         occurrence = {
             key: block[key]
-            for key in ("extent_emu", "display_width_px", "display_height_px")
+            for key in ("extent_emu", "display_width_px", "display_height_px", "display_mode")
             if key in block
         }
         if occurrence:

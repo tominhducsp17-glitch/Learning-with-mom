@@ -1915,6 +1915,23 @@ button:disabled {
   line-height: 1;
 }
 
+.asset-wrap.is-illustration {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 12px 0 16px;
+  line-height: normal;
+  vertical-align: initial;
+}
+
+.asset-wrap.is-illustration img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  vertical-align: initial;
+}
+
 .asset-wrap > svg {
   position: absolute;
   top: -5px;

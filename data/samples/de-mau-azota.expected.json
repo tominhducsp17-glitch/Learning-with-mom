@@ -1,7 +1,9 @@
 {
   "title_contains": "GIUA KY 1",
   "expected_assets": {
-    "wmf_count": 184
+    "wmf_count": 184,
+    "png_count": 3,
+    "total_count": 187
   },
   "sections": {
     "single_choice": {
