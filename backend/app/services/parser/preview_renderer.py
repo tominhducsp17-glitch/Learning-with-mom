@@ -193,6 +193,9 @@ def _render_blocks(blocks: list[dict[str, Any]], output_path: Path) -> str:
     for block in blocks:
         if block.get("type") == "text":
             rendered.append(html.escape(str(block.get("text", ""))))
+        elif block.get("type") == "math":
+            latex = html.escape(str(block.get("latex", "")))
+            rendered.append(f'<code class="math-source">{latex}</code>')
         elif block.get("type") == "image":
             src = _image_src(str(block.get("render_path") or ""), output_path)
             alt = html.escape(str(block.get("asset_id", "inline asset")))

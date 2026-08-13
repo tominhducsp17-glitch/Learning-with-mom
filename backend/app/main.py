@@ -993,6 +993,9 @@ def _blocks_to_markup(blocks: list[dict[str, Any]]) -> str:
     for block in blocks:
         if block.get("type") == "image" and block.get("asset_id"):
             parts.append(f"[img:${block['asset_id']}$]")
+        elif block.get("type") == "math" and block.get("latex"):
+            encoded = base64.urlsafe_b64encode(str(block["latex"]).encode("utf-8")).decode("ascii").rstrip("=")
+            parts.append(f"[math64:${encoded}$]")
         else:
             parts.append(str(block.get("text", "")))
     return "".join(parts)

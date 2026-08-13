@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
 import posixpath
@@ -23,6 +24,7 @@ NS = {
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
     "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
     "v": "urn:schemas-microsoft-com:vml",
+    "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
 }
 
@@ -342,7 +344,7 @@ def _read_body_items(body: ET.Element, context: AssetContext) -> list[BodyItem]:
         tag = _local_name(child.tag)
         if tag == "p":
             blocks = _mark_standalone_illustrations(_paragraph_blocks(child, context))
-            if _blocks_text(blocks).strip() or _has_image(blocks):
+            if _blocks_text(blocks).strip() or _has_rich_content(blocks):
                 items.append(BodyItem(kind="paragraph", blocks=blocks))
         elif tag == "tbl":
             items.append(BodyItem(kind="table", rows=_table_text_rows(child)))
@@ -388,6 +390,11 @@ def _append_inline_blocks(
     if tag in {"br", "cr"}:
         _append_text(blocks, "\n")
         return
+    if tag == "oMath":
+        latex = _omml_to_latex(element)
+        if latex:
+            blocks.append({"type": "math", "latex": latex})
+        return
     if tag in {"drawing", "pict", "object", "shape"}:
         references = _image_references(element)
         if not references:
@@ -400,6 +407,137 @@ def _append_inline_blocks(
 
     for child in element:
         _append_inline_blocks(child, blocks, context)
+
+
+def _omml_to_latex(element: ET.Element) -> str:
+    latex = _omml_children_to_latex(element).strip()
+    function_pattern = r"(?<![A-Za-z\\])(arcsin|arccos|arctan|sin|cos|tan|cot|sec|csc|log|ln|exp)(?=[A-Za-z0-9(])"
+    return re.sub(function_pattern, lambda match: rf"\{match.group(1)} ", latex)
+
+
+def _omml_children_to_latex(element: ET.Element, *, skip: set[str] | None = None) -> str:
+    skipped = skip or set()
+    return "".join(
+        _omml_node_to_latex(child)
+        for child in element
+        if _local_name(child.tag) not in skipped
+    )
+
+
+def _omml_node_to_latex(element: ET.Element) -> str:
+    tag = _local_name(element.tag)
+    if tag.endswith("Pr") or tag in {"ctrlPr", "argPr"}:
+        return ""
+    if tag == "t":
+        return _math_text_to_latex(element.text or "")
+    if tag == "r":
+        text = "".join(_math_text_to_latex(node.text or "") for node in element.findall("m:t", NS))
+        script = element.find("m:rPr/m:scr", NS)
+        if script is not None and _attribute_value(script, "val") == "double-struck":
+            raw = "".join(node.text or "" for node in element.findall("m:t", NS))
+            if raw:
+                return rf"\mathbb{{{raw}}}"
+        return text
+    if tag == "f":
+        numerator = _omml_container_to_latex(element.find("m:num", NS))
+        denominator = _omml_container_to_latex(element.find("m:den", NS))
+        return rf"\frac{{{numerator}}}{{{denominator}}}"
+    if tag == "d":
+        props = element.find("m:dPr", NS)
+        begin = _delimiter_property(props, "begChr", "(")
+        end = _delimiter_property(props, "endChr", ")")
+        contents = [_omml_node_to_latex(child) for child in element.findall("m:e", NS)]
+        if begin == "|" and not end:
+            return rf"\mid {''.join(contents)}"
+        separator = _delimiter_property(props, "sepChr", "|")
+        inner = separator.join(contents)
+        return f"{_left_delimiter(begin)}{inner}{_right_delimiter(end)}"
+    if tag == "func":
+        name = _omml_container_to_latex(element.find("m:fName", NS))
+        argument = _omml_container_to_latex(element.find("m:e", NS))
+        plain_name = re.sub(r"\\([A-Za-z]+)\s*", r"\1", name)
+        if plain_name in {"sin", "cos", "tan", "cot", "sec", "csc", "log", "ln", "exp", "max", "min"}:
+            name = rf"\{plain_name} "
+        return f"{name}{argument}"
+    if tag in {"sSup", "sSub", "sSubSup"}:
+        base = _omml_container_to_latex(element.find("m:e", NS))
+        sub = _omml_container_to_latex(element.find("m:sub", NS))
+        sup = _omml_container_to_latex(element.find("m:sup", NS))
+        grouped_base = base if base.rstrip().endswith((")", "]", r"\right)")) else f"{{{base}}}"
+        if tag == "sSup":
+            return rf"{grouped_base}^{{{sup}}}"
+        if tag == "sSub":
+            return rf"{grouped_base}_{{{sub}}}"
+        return rf"{grouped_base}_{{{sub}}}^{{{sup}}}"
+    if tag == "rad":
+        degree = _omml_container_to_latex(element.find("m:deg", NS))
+        body = _omml_container_to_latex(element.find("m:e", NS))
+        return rf"\sqrt[{degree}]{{{body}}}" if degree else rf"\sqrt{{{body}}}"
+    if tag in {"limLow", "limUpp"}:
+        base = _omml_container_to_latex(element.find("m:e", NS))
+        limit = _omml_container_to_latex(element.find("m:lim", NS))
+        marker = "_" if tag == "limLow" else "^"
+        return rf"{{{base}}}{marker}{{{limit}}}"
+    return _omml_children_to_latex(element)
+
+
+def _omml_container_to_latex(element: ET.Element | None) -> str:
+    return _omml_children_to_latex(element) if element is not None else ""
+
+
+def _attribute_value(element: ET.Element | None, name: str) -> str | None:
+    if element is None:
+        return None
+    for key, value in element.attrib.items():
+        if _local_name(key) == name:
+            return value
+    return None
+
+
+def _delimiter_property(props: ET.Element | None, name: str, default: str) -> str:
+    if props is None:
+        return default
+    node = props.find(f"m:{name}", NS)
+    value = _attribute_value(node, "val")
+    return default if node is None or value is None else value
+
+
+def _left_delimiter(value: str) -> str:
+    if not value:
+        return ""
+    escaped = r"\{" if value == "{" else r"\lvert" if value == "|" else value
+    return rf"\left{escaped}"
+
+
+def _right_delimiter(value: str) -> str:
+    if not value:
+        return ""
+    escaped = r"\}" if value == "}" else r"\rvert" if value == "|" else value
+    return rf"\right{escaped}"
+
+
+def _math_text_to_latex(text: str) -> str:
+    replacements = {
+        "{": r"\{",
+        "}": r"\}",
+        "π": r"\pi ",
+        "∞": r"\infty ",
+        "∈": r"\in ",
+        "∉": r"\notin ",
+        "≠": r"\ne ",
+        "≤": r"\le ",
+        "≥": r"\ge ",
+        "⇔": r"\Leftrightarrow ",
+        "⇒": r"\Rightarrow ",
+        "→": r"\to ",
+        "∣": r"\mid ",
+        "ℝ": r"\mathbb{R}",
+        "ℤ": r"\mathbb{Z}",
+        "×": r"\times ",
+    }
+    output = "".join(replacements.get(char, r"\setminus " if char == "\\" else char) for char in text)
+    function_pattern = r"(?<![A-Za-z\\])(arcsin|arccos|arctan|sin|cos|tan|cot|sec|csc|log|ln|exp)(?=[A-Za-z0-9(])"
+    return re.sub(function_pattern, lambda match: rf"\{match.group(1)} ", output)
 
 
 def _image_references(element: ET.Element) -> list[dict[str, Any]]:
@@ -542,7 +680,7 @@ def _parse_sections(
             continue
         blocks = item.blocks
         text = _clean_space(_blocks_text(blocks))
-        if not text and not _has_image(blocks):
+        if not text and not _has_rich_content(blocks):
             continue
 
         section_type = _section_type_from_heading(text)
@@ -696,7 +834,7 @@ def _validate_exam(sections: list[dict[str, Any]], answer_keys: dict[str, Any]) 
                 missing = [
                     label
                     for label, blocks in question["options"].items()
-                    if not _blocks_text(blocks).strip() and not _has_image(blocks)
+                    if not _blocks_text(blocks).strip() and not _has_rich_content(blocks)
                 ]
                 if missing:
                     warnings.append(
@@ -713,7 +851,7 @@ def _validate_exam(sections: list[dict[str, Any]], answer_keys: dict[str, Any]) 
                 missing = [
                     label
                     for label, blocks in question["statements"].items()
-                    if not _blocks_text(blocks).strip() and not _has_image(blocks)
+                    if not _blocks_text(blocks).strip() and not _has_rich_content(blocks)
                 ]
                 if missing:
                     warnings.append(
@@ -764,6 +902,10 @@ def _blocks_to_markup(blocks: list[dict[str, Any]]) -> str:
             asset_id = block.get("asset_id", "")
             if asset_id:
                 parts.append(f"[img:${asset_id}$]")
+        elif block.get("type") == "math":
+            encoded = base64.urlsafe_b64encode(str(block.get("latex", "")).encode("utf-8")).decode("ascii").rstrip("=")
+            if encoded:
+                parts.append(f"[math64:${encoded}$]")
         elif block.get("type") == "text":
             parts.append(_escape_markup_text(block.get("text", "")))
     return "".join(parts)
@@ -919,8 +1061,8 @@ def _blocks_text(blocks: list[dict[str, Any]]) -> str:
     return "".join(block["text"] for block in blocks if block["type"] == "text")
 
 
-def _has_image(blocks: list[dict[str, Any]]) -> bool:
-    return any(block["type"] == "image" for block in blocks)
+def _has_rich_content(blocks: list[dict[str, Any]]) -> bool:
+    return any(block["type"] in {"image", "math"} for block in blocks)
 
 
 def _clean_space(text: str) -> str:

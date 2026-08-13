@@ -45,6 +45,12 @@
 ```
 
 ```json
+{ "type": "math", "latex": "x\\in\\left[-\\pi;\\pi\\right]" }
+```
+
+Cong thuc Word dang OMML duoc chuyen truc tiep thanh block `math`; khong OCR thanh text thuong.
+
+```json
 {
   "type": "image",
   "asset_id": "img_0001",

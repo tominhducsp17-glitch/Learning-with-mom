@@ -3,6 +3,11 @@ export type TextBlock = {
   text: string;
 };
 
+export type MathBlock = {
+  type: "math";
+  latex: string;
+};
+
 export type ImageBlock = {
   type: "image";
   asset_id: string;
@@ -19,7 +24,7 @@ export type ImageBlock = {
   display_height_px?: number;
 };
 
-export type ContentBlock = TextBlock | ImageBlock;
+export type ContentBlock = TextBlock | MathBlock | ImageBlock;
 
 export type AssetMapEntry = Record<string, unknown> & {
   asset_id: string;

@@ -1442,6 +1442,23 @@ function Blocks({
         if (block.type === "image") {
           return <QuestionImage block={block} key={`${block.asset_id}-${index}`} />;
         }
+        if (block.type === "math") {
+          if (!editMode) return <MathToken latex={block.latex} key={`math-${index}`} />;
+          return (
+            <textarea
+              key={`math-${index}`}
+              value={block.latex}
+              aria-label="Công thức LaTeX"
+              rows={2}
+              onChange={(event) => {
+                const next = structuredClone(blocks);
+                const target = next[index];
+                if (target.type === "math") target.latex = event.target.value;
+                onChange(next);
+              }}
+            />
+          );
+        }
         if (editMode) {
           return (
             <textarea
@@ -1597,8 +1614,16 @@ function MathToken({ latex }: { latex: string }) {
 function blocksToMarkup(blocks: ContentBlock[]) {
   return blocks.map((block) => {
     if (block.type === "image") return `[img:$${block.asset_id}$]`;
+    if (block.type === "math") return `[math64:$${encodeMath64(block.latex)}$]`;
     return escapeMarkupText(block.text);
   }).join("");
+}
+
+function encodeMath64(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function escapeMarkupText(text: string) {
