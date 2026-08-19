@@ -111,6 +111,7 @@ export async function publishAssignment(
   durationMinutes: number,
   showScore = false,
   showAnswers = false,
+  maxAttempts = 1,
 ): Promise<Assignment> {
   return readJson<Assignment>(
     await fetch(`/api/exams/${draftId}/publish`, {
@@ -121,8 +122,39 @@ export async function publishAssignment(
         duration_minutes: durationMinutes,
         show_score: showScore,
         show_answers: showAnswers,
+        max_attempts: maxAttempts,
       }),
     }),
+  );
+}
+
+export async function updateAssignmentAttemptSettings(
+  code: string,
+  maxAttempts: number,
+): Promise<Assignment> {
+  return readJson<Assignment>(
+    await fetch(`/api/assignments/${encodeURIComponent(code)}/attempt-settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ max_attempts: maxAttempts }),
+    }),
+  );
+}
+
+export async function syncAssignmentStudents(code: string): Promise<Assignment> {
+  return readJson<Assignment>(
+    await fetch(`/api/assignments/${encodeURIComponent(code)}/students/sync`, {
+      method: "POST",
+    }),
+  );
+}
+
+export async function grantAssignmentAttempt(code: string, studentId: string): Promise<AssignmentResults> {
+  return readJson<AssignmentResults>(
+    await fetch(
+      `/api/assignments/${encodeURIComponent(code)}/students/${encodeURIComponent(studentId)}/grant-attempt`,
+      { method: "POST" },
+    ),
   );
 }
 
@@ -155,6 +187,19 @@ export async function autosaveSubmission(
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ student_id: studentId, answers }),
+    }),
+  );
+}
+
+export async function startSubmissionAttempt(
+  code: string,
+  studentId: string,
+): Promise<SubmissionResult> {
+  return readJson<SubmissionResult>(
+    await fetch(`/api/assignments/${encodeURIComponent(code)}/attempts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ student_id: studentId, answers: {} }),
     }),
   );
 }

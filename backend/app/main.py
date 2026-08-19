@@ -59,11 +59,16 @@ class PublishAssignmentPayload(BaseModel):
     duration_minutes: int = 45
     show_score: bool = False
     show_answers: bool = False
+    max_attempts: int = 1
 
 
 class AssignmentVisibilityPayload(BaseModel):
     show_score: bool = False
     show_answers: bool = False
+
+
+class AssignmentAttemptSettingsPayload(BaseModel):
+    max_attempts: int = 1
 
 
 class OcrAssetPayload(BaseModel):
@@ -291,6 +296,7 @@ def publish_assignment(draft_id: str, payload: PublishAssignmentPayload) -> dict
             payload.duration_minutes,
             show_score=payload.show_score,
             show_answers=payload.show_answers,
+            max_attempts=payload.max_attempts,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản nháp hoặc lớp.") from exc
@@ -308,6 +314,40 @@ def update_assignment_visibility(code: str, payload: AssignmentVisibilityPayload
     return _assignment_for_client(assignment)
 
 
+@app.put("/api/assignments/{code}/attempt-settings")
+def update_assignment_attempt_settings(
+    code: str,
+    payload: AssignmentAttemptSettingsPayload,
+) -> dict[str, Any]:
+    try:
+        assignment = store.update_assignment_settings(
+            code,
+            payload.max_attempts,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài được giao.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _assignment_for_client(assignment)
+
+
+@app.post("/api/assignments/{code}/students/sync")
+def sync_assignment_students(code: str) -> dict[str, Any]:
+    try:
+        assignment = store.sync_assignment_students(code)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài được giao.") from exc
+    return _assignment_for_client(assignment)
+
+
+@app.post("/api/assignments/{code}/students/{student_id}/grant-attempt")
+def grant_assignment_attempt(code: str, student_id: str) -> dict[str, Any]:
+    try:
+        return store.grant_extra_attempt(code, student_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy học sinh trong bài được giao.") from exc
+
+
 @app.get("/api/assignments/{code}")
 def get_assignment(code: str, student_id: str | None = Query(default=None)) -> dict[str, Any]:
     try:
@@ -323,6 +363,18 @@ def autosave_submission(code: str, payload: SubmissionUpdate) -> dict[str, Any]:
         return store.save_submission(code, payload.student_id, payload.answers, submit=False)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy học sinh hoặc bài được giao.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/assignments/{code}/attempts")
+def start_submission_attempt(code: str, payload: SubmissionUpdate) -> dict[str, Any]:
+    try:
+        return store.start_submission_attempt(code, payload.student_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy học sinh hoặc bài được giao.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/api/assignments/{code}/submit")
@@ -331,6 +383,8 @@ def submit_assignment(code: str, payload: SubmissionUpdate) -> dict[str, Any]:
         return store.save_submission(code, payload.student_id, payload.answers, submit=True)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Không tìm thấy học sinh hoặc bài được giao.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/api/assignments/{code}/chat")
@@ -1113,7 +1167,11 @@ def _assignment_score_rows(results: dict[str, Any]) -> list[list[Any]]:
     rows: list[list[Any]] = [[
         "student_code",
         "student_name",
+        "active_in_assignment",
         "status",
+        "selected_attempt",
+        "attempts_used",
+        "attempt_limit",
         "total_score",
         "max_score",
         "part_i",
@@ -1128,9 +1186,13 @@ def _assignment_score_rows(results: dict[str, Any]) -> list[list[Any]]:
         rows.append([
             student.get("student_code", ""),
             student.get("name", ""),
+            "yes" if submission.get("active", True) else "no",
             submission.get("status", ""),
-            submission.get("total_score") or "",
-            submission.get("max_score") or "",
+            submission.get("attempt_no") or "",
+            submission.get("attempt_count", 0),
+            submission.get("attempt_limit", 0),
+            submission.get("total_score") if submission.get("total_score") is not None else "",
+            submission.get("max_score") if submission.get("max_score") is not None else "",
             _section_csv_score(by_section.get("single_choice")),
             _section_csv_score(by_section.get("true_false")),
             _section_csv_score(by_section.get("short_answer")),

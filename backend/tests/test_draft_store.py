@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,41 @@ from backend.app.storage import DraftStore, add_default_scores
 
 
 class DraftStoreTest(unittest.TestCase):
+    @staticmethod
+    def _create_assignment(store: DraftStore, *, max_attempts: int = 1) -> dict:
+        exam = add_default_scores(
+            {
+                "title": "Đề kiểm tra lượt làm",
+                "sections": [
+                    {
+                        "type": "single_choice",
+                        "questions": [{"number": 1, "prompt_blocks": [], "correct_answer": "A"}],
+                    },
+                    {"type": "true_false", "questions": []},
+                    {"type": "short_answer", "questions": []},
+                ],
+                "answer_keys": {},
+                "assets": [],
+                "warnings": [],
+            }
+        )
+        store.create("attempt-draft", "attempt.docx", exam)
+        classroom = store.upsert_class(
+            None,
+            "12A1",
+            "2026-2027",
+            [
+                {"name": "Nguyễn An", "student_code": "HS001"},
+                {"name": "Trần Bình", "student_code": "HS002"},
+            ],
+        )
+        return store.publish_assignment(
+            "attempt-draft",
+            classroom["id"],
+            45,
+            max_attempts=max_attempts,
+        )
+
     def test_create_and_update_keeps_answer_keys_in_sync(self) -> None:
         exam = add_default_scores(
             {
@@ -211,6 +247,126 @@ class DraftStoreTest(unittest.TestCase):
         self.assertEqual(1, synced_count)
         self.assertIn("[math64:$eCsx$]", synced_question["prompt_markup"])
         self.assertNotIn("[img:$img_0001$]", synced_question["prompt_markup"])
+
+    def test_multiple_attempts_resume_limit_and_teacher_grant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = DraftStore(Path(tmp) / "test.sqlite3")
+            store.initialize()
+            assignment = self._create_assignment(store, max_attempts=2)
+            student_id = assignment["students"][0]["id"]
+
+            first = store.start_submission_attempt(assignment["code"], student_id)
+            resumed = store.start_submission_attempt(assignment["code"], student_id)
+            store.save_submission(assignment["code"], student_id, {"single_choice:1": "B"}, submit=True)
+            second = store.start_submission_attempt(assignment["code"], student_id)
+            store.save_submission(assignment["code"], student_id, {"single_choice:1": "A"}, submit=True)
+
+            with self.assertRaises(ValueError):
+                store.start_submission_attempt(assignment["code"], student_id)
+
+            granted_results = store.grant_extra_attempt(assignment["code"], student_id)
+            third = store.start_submission_attempt(assignment["code"], student_id)
+            results = store.get_assignment_results(assignment["code"])
+
+        student_result = next(item for item in results["submissions"] if item["student"]["id"] == student_id)
+        granted_student = next(item for item in granted_results["submissions"] if item["student"]["id"] == student_id)
+        self.assertEqual(first["id"], resumed["id"])
+        self.assertEqual(1, first["attempt_no"])
+        self.assertEqual(2, second["attempt_no"])
+        self.assertEqual(3, third["attempt_no"])
+        self.assertEqual(3, granted_student["attempt_limit"])
+        self.assertEqual(3, student_result["attempt_count"])
+        self.assertEqual(2, student_result["attempt_no"])
+        self.assertEqual(0.25, student_result["total_score"])
+
+    def test_roster_sync_preserves_students_and_submission_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = DraftStore(Path(tmp) / "test.sqlite3")
+            store.initialize()
+            assignment = self._create_assignment(store)
+            original_students = {student["student_code"]: student for student in assignment["students"]}
+            store.save_submission(
+                assignment["code"],
+                original_students["HS001"]["id"],
+                {"single_choice:1": "A"},
+                submit=True,
+            )
+
+            updated_class = store.upsert_class(
+                assignment["classroom"]["id"],
+                "12A1",
+                "2026-2027",
+                [
+                    {"name": "Nguyễn An Đã Sửa", "student_code": "HS001"},
+                    {"name": "Lê Chi", "student_code": "HS003"},
+                ],
+            )
+            synced_assignment = store.sync_assignment_students(assignment["code"])
+            results = store.get_assignment_results(assignment["code"])
+
+        updated_students = {student["student_code"]: student for student in updated_class["students"]}
+        assigned_codes = {student["student_code"] for student in synced_assignment["students"]}
+        archived = next(item for item in results["submissions"] if item["student"]["student_code"] == "HS002")
+        retained = next(item for item in results["submissions"] if item["student"]["student_code"] == "HS001")
+        self.assertEqual(original_students["HS001"]["id"], updated_students["HS001"]["id"])
+        self.assertEqual("Nguyễn An Đã Sửa", retained["student"]["name"])
+        self.assertEqual({"HS001", "HS003"}, assigned_codes)
+        self.assertFalse(archived["active"])
+        self.assertEqual("submitted", retained["status"])
+        self.assertEqual(1, retained["attempt_count"])
+
+    def test_migration_keeps_existing_submission_as_attempt_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            database_path = Path(tmp) / "legacy.sqlite3"
+            connection = sqlite3.connect(database_path)
+            connection.executescript(
+                """
+                CREATE TABLE classes (id TEXT PRIMARY KEY, name TEXT, school_year TEXT, created_at TEXT);
+                CREATE TABLE students (
+                    id TEXT PRIMARY KEY, class_id TEXT, name TEXT, student_code TEXT, created_at TEXT,
+                    UNIQUE (class_id, student_code)
+                );
+                CREATE TABLE assignments (
+                    id TEXT PRIMARY KEY, exam_id TEXT, class_id TEXT, code TEXT UNIQUE, status TEXT,
+                    duration_minutes INTEGER, show_score INTEGER, show_answers INTEGER,
+                    created_at TEXT, published_at TEXT
+                );
+                CREATE TABLE submissions (
+                    id TEXT PRIMARY KEY, assignment_id TEXT, student_id TEXT, status TEXT,
+                    answers_json TEXT, created_at TEXT, updated_at TEXT, submitted_at TEXT,
+                    UNIQUE (assignment_id, student_id)
+                );
+                INSERT INTO classes VALUES ('class-1', '12A1', '2026-2027', '2026-01-01');
+                INSERT INTO students VALUES ('student-1', 'class-1', 'Nguyễn An', 'HS001', '2026-01-01');
+                INSERT INTO assignments VALUES (
+                    'assignment-1', 'exam-1', 'class-1', 'OLD-CODE', 'published', 45, 0, 0,
+                    '2026-01-01', '2026-01-01'
+                );
+                INSERT INTO submissions VALUES (
+                    'submission-1', 'assignment-1', 'student-1', 'submitted', '{}',
+                    '2026-01-01', '2026-01-01', '2026-01-01'
+                );
+                """
+            )
+            connection.close()
+
+            store = DraftStore(database_path)
+            store.initialize()
+            connection = sqlite3.connect(database_path)
+            attempt_no = connection.execute(
+                "SELECT attempt_no FROM submissions WHERE id = 'submission-1'"
+            ).fetchone()[0]
+            membership = connection.execute(
+                "SELECT active FROM assignment_students WHERE assignment_id = 'assignment-1' AND student_id = 'student-1'"
+            ).fetchone()
+            assignment_settings = connection.execute(
+                "SELECT max_attempts, score_policy FROM assignments WHERE id = 'assignment-1'"
+            ).fetchone()
+            connection.close()
+
+        self.assertEqual(1, attempt_no)
+        self.assertEqual((1,), membership)
+        self.assertEqual((1, "highest"), assignment_settings)
 
 
 if __name__ == "__main__":

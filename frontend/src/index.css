@@ -966,7 +966,7 @@ button:disabled {
 
 .publish-config {
   display: grid;
-  grid-template-columns: minmax(220px, 300px) 170px auto auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(210px, 280px) 145px 120px auto auto minmax(160px, 1fr) auto;
   gap: 12px;
   align-items: end;
   padding: 14px 22px;
@@ -1353,12 +1353,28 @@ button:disabled {
 
 .results-row {
   display: grid;
-  grid-template-columns: 24px minmax(140px, 1.5fr) repeat(5, minmax(82px, 1fr));
+  grid-template-columns: 24px minmax(150px, 1.5fr) 98px 62px repeat(4, minmax(76px, 1fr));
   gap: 8px;
   align-items: center;
   padding: 9px 12px;
   border-top: 1px solid var(--line);
   font-size: 13px;
+}
+
+.inactive-student {
+  display: block;
+  margin-top: 2px;
+  color: #8b849d;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.inactive-student.inline {
+  display: inline-flex;
+  margin-top: 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #eeeaf4;
 }
 
 .results-row:first-child {
@@ -1494,6 +1510,18 @@ button:disabled {
   margin-bottom: 12px;
 }
 
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.secondary-button.compact {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .detail-student-info {
   display: flex;
   align-items: center;
@@ -1534,6 +1562,42 @@ button:disabled {
 .detail-meta b {
   color: var(--ink);
   font-weight: 750;
+}
+
+.attempt-history {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid #e0d8f2;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.attempt-history > strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.attempt-history > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.attempt-history span {
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: #706987;
+  background: #f4f1f8;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.attempt-history span.is-selected {
+  color: var(--purple);
+  background: var(--purple-soft);
+  box-shadow: inset 0 0 0 1px #d7cdf9;
 }
 
 .detail-scores {
@@ -2371,6 +2435,25 @@ button:disabled {
 .result-section-grid span,
 .result-section-grid strong {
   display: block;
+}
+
+.result-attempt-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid #ded5f8;
+  border-radius: 8px;
+  color: #655f79;
+  background: #fbf7ff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.result-next-attempt {
+  min-height: 38px;
 }
 
 .result-section-grid span {

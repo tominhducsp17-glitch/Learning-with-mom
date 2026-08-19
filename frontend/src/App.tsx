@@ -40,14 +40,18 @@ import {
   getExamDraft,
   getOverview,
   getAssignmentResults,
+  grantAssignmentAttempt,
   importExam,
   publishAssignment,
   rerunExamOcr,
   regradeAssignment,
   saveExam,
   saveClassroom,
+  startSubmissionAttempt,
   suggestAssetLatex,
   submitAssignment,
+  syncAssignmentStudents,
+  updateAssignmentAttemptSettings,
   updateAssignmentVisibility,
 } from "./api";
 import type {
@@ -92,6 +96,7 @@ function App() {
   const [durationMinutes, setDurationMinutes] = useState(45);
   const [showScoreToStudents, setShowScoreToStudents] = useState(false);
   const [showAnswersToStudents, setShowAnswersToStudents] = useState(false);
+  const [maxAttempts, setMaxAttempts] = useState(1);
   const [showClassManager, setShowClassManager] = useState(false);
   const [joinCode, setJoinCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -234,6 +239,7 @@ function App() {
         durationMinutes,
         showScoreToStudents,
         showAnswersToStudents,
+        maxAttempts,
       );
       setAssignment(published);
       setAssignmentResults(await getAssignmentResults(published.code));
@@ -277,6 +283,12 @@ function App() {
       const savedClassroom = await saveClassroom(payload);
       await refreshClasses();
       setSelectedClassId(savedClassroom.id);
+      if (assignment && assignment.classroom.id === savedClassroom.id) {
+        const synced = await syncAssignmentStudents(assignment.code);
+        setAssignment(synced);
+        setAssignmentResults(await getAssignmentResults(synced.code));
+        setAssignmentAnalytics(await getAssignmentAnalytics(synced.code));
+      }
       setShowClassManager(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Không thể lưu lớp.");
@@ -331,6 +343,7 @@ function App() {
       setDurationMinutes(loadedAssignment.duration_minutes || 45);
       setShowScoreToStudents(loadedAssignment.show_score);
       setShowAnswersToStudents(loadedAssignment.show_answers);
+      setMaxAttempts(loadedAssignment.max_attempts || 1);
       setActiveSection("single_choice");
       setActiveQuestion(loadedDraft.exam.sections[0]?.questions[0]?.number ?? 1);
       setDirty(false);
@@ -404,6 +417,65 @@ function App() {
       void refreshOverview();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Không thể cập nhật quyền xem kết quả.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleAttemptSettingsChange(nextMaxAttempts: number) {
+    const safeAttempts = Math.max(1, Math.min(20, nextMaxAttempts));
+    setMaxAttempts(safeAttempts);
+    if (!assignment) return;
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await updateAssignmentAttemptSettings(
+        assignment.code,
+        safeAttempts,
+      );
+      setAssignment(updated);
+      setAssignmentResults(await getAssignmentResults(updated.code));
+      setAssignmentAnalytics(await getAssignmentAnalytics(updated.code));
+      void refreshOverview();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không thể cập nhật số lượt làm bài.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSyncAssignmentStudents() {
+    if (!assignment) return;
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await syncAssignmentStudents(assignment.code);
+      setAssignment(updated);
+      setAssignmentResults(await getAssignmentResults(updated.code));
+      setAssignmentAnalytics(await getAssignmentAnalytics(updated.code));
+      void refreshOverview();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không thể đồng bộ danh sách học sinh.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleGrantAttempt(studentId: string) {
+    if (!assignment) return;
+    const studentName = assignmentResults?.submissions.find(
+      (item) => item.student?.id === studentId,
+    )?.student?.name ?? "học sinh này";
+    if (!window.confirm(`Cấp thêm 1 lượt làm bài cho ${studentName}?`)) return;
+    setSaving(true);
+    setError("");
+    try {
+      setAssignmentResults(await grantAssignmentAttempt(assignment.code, studentId));
+      const updated = await getAssignment(assignment.code);
+      setAssignment(updated);
+      setAssignmentAnalytics(await getAssignmentAnalytics(updated.code));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không thể cấp thêm lượt làm bài.");
     } finally {
       setSaving(false);
     }
@@ -596,6 +668,25 @@ function App() {
             <span>phút</span>
           </div>
         </div>
+        <div className="config-field attempt-count-field">
+          <label htmlFor="max-attempts">Số lượt</label>
+          <div className="number-field">
+            <input
+              id="max-attempts"
+              type="number"
+              min="1"
+              max="20"
+              value={maxAttempts}
+              disabled={saving}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                setMaxAttempts(Number.isFinite(value) ? Math.max(1, Math.min(20, value)) : 1);
+              }}
+              onBlur={() => void handleAttemptSettingsChange(maxAttempts)}
+            />
+            <span>lượt</span>
+          </div>
+        </div>
         <label className="toggle-field">
           <input
             type="checkbox"
@@ -641,7 +732,7 @@ function App() {
           <div>
             <Users size={18} />
             <strong>Lớp {assignment.classroom.name}</strong>
-            <span>{assignment.students.length} học sinh · {assignment.duration_minutes} phút</span>
+            <span>{assignment.students.length} học sinh · {assignment.duration_minutes} phút · {assignment.max_attempts} lượt</span>
           </div>
           <div className="publish-visibility">
             <label>
@@ -667,6 +758,15 @@ function App() {
             <a href={assignmentHref}>{assignmentHref}</a>
           </div>
           <div className="publish-actions">
+            <button
+              className="icon-button"
+              title="Đồng bộ danh sách lớp vào bài này"
+              aria-label="Đồng bộ danh sách lớp vào bài này"
+              disabled={saving}
+              onClick={() => void handleSyncAssignmentStudents()}
+            >
+              <Users size={16} />
+            </button>
             <button className="icon-button" title="Tải kết quả" aria-label="Tải kết quả" onClick={() => void refreshResults()}>
               <RotateCcw size={16} />
             </button>
@@ -681,7 +781,13 @@ function App() {
         </section>
       )}
 
-      {assignmentResults && <TeacherResults results={assignmentResults} />}
+      {assignmentResults && (
+        <TeacherResults
+          results={assignmentResults}
+          saving={saving}
+          onGrantAttempt={(studentId) => void handleGrantAttempt(studentId)}
+        />
+      )}
       {assignmentAnalytics && <TeacherAnalytics analytics={assignmentAnalytics} />}
 
       <nav className="section-tabs" aria-label="Các phần của đề">
@@ -1644,7 +1750,15 @@ function unescapeMarkupText(text: string) {
   return text.replace(/\\\[/g, "[").replace(/\\\\/g, "\\");
 }
 
-function TeacherResults({ results }: { results: AssignmentResults }) {
+function TeacherResults({
+  results,
+  saving,
+  onGrantAttempt,
+}: {
+  results: AssignmentResults;
+  saving: boolean;
+  onGrantAttempt: (studentId: string) => void;
+}) {
   const submittedCount = results.submissions.filter((submission) => submission.status === "submitted").length;
   const [expandedId, setExpandedId] = useState("");
   return (
@@ -1653,6 +1767,7 @@ function TeacherResults({ results }: { results: AssignmentResults }) {
         <Sigma size={18} />
         <strong>Bảng điểm {results.assignment.classroom.name}</strong>
         <span>{submittedCount}/{results.assignment.student_count} đã nộp</span>
+        <span>Đang tính điểm cao nhất</span>
         <a className="results-export-button" href={assignmentXlsxUrl(results.assignment.code)}>
           <Download size={15} />
           <span>Xuất Excel</span>
@@ -1666,6 +1781,7 @@ function TeacherResults({ results }: { results: AssignmentResults }) {
           <span></span>
           <span>Học sinh</span>
           <span>Trạng thái</span>
+          <span>Lượt</span>
           <span>Điểm</span>
           <span>PHẦN I</span>
           <span>PHẦN II</span>
@@ -1685,15 +1801,24 @@ function TeacherResults({ results }: { results: AssignmentResults }) {
                 <span className="expand-icon">
                   {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </span>
-                <span>{submission.student?.name ?? "Không rõ"}</span>
+                <span>
+                  {submission.student?.name ?? "Không rõ"}
+                  {!submission.active && <small className="inactive-student">Đã rời danh sách</small>}
+                </span>
                 <span className={`status-pill ${submission.status}`}>{submissionStatusLabel(submission.status)}</span>
+                <span>{submission.attempt_count}/{submission.attempt_limit}</span>
                 <strong>{formatScore(submission.total_score, submission.max_score)}</strong>
                 <span>{formatSectionScore(submission.grading_detail, "single_choice")}</span>
                 <span>{formatSectionScore(submission.grading_detail, "true_false")}</span>
                 <span>{formatSectionScore(submission.grading_detail, "short_answer")}</span>
               </button>
               {isExpanded && (
-                <SubmissionDetail submission={submission} onClose={() => setExpandedId("")} />
+                <SubmissionDetail
+                  submission={submission}
+                  saving={saving}
+                  onGrantAttempt={onGrantAttempt}
+                  onClose={() => setExpandedId("")}
+                />
               )}
             </div>
           );
@@ -1705,33 +1830,19 @@ function TeacherResults({ results }: { results: AssignmentResults }) {
 
 type SubmissionEntry = AssignmentResults["submissions"][number];
 
-function SubmissionDetail({ submission, onClose }: { submission: SubmissionEntry; onClose: () => void }) {
+function SubmissionDetail({
+  submission,
+  saving,
+  onGrantAttempt,
+  onClose,
+}: {
+  submission: SubmissionEntry;
+  saving: boolean;
+  onGrantAttempt: (studentId: string) => void;
+  onClose: () => void;
+}) {
   const student = submission.student;
   const grade = submission.grading_detail;
-
-  if (submission.status === "not_started") {
-    return (
-      <div className="submission-detail">
-        <div className="detail-empty">
-          <BookOpen size={28} />
-          <strong>{student?.name ?? "Học sinh"} chưa bắt đầu làm bài.</strong>
-          <span>Khi học sinh vào bài, trạng thái sẽ tự cập nhật.</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (submission.status === "in_progress" && !grade) {
-    return (
-      <div className="submission-detail">
-        <div className="detail-empty">
-          <Clock size={28} />
-          <strong>{student?.name ?? "Học sinh"} đang làm bài.</strong>
-          <span>Bài làm chưa được nộp nên chưa có kết quả chấm.</span>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="submission-detail">
@@ -1740,13 +1851,29 @@ function SubmissionDetail({ submission, onClose }: { submission: SubmissionEntry
           <strong>{student?.name ?? "Không rõ"}</strong>
           {student?.student_code && <span className="detail-code">{student.student_code}</span>}
           <span className={`status-pill ${submission.status}`}>{submissionStatusLabel(submission.status)}</span>
+          {!submission.active && <span className="inactive-student inline">Đã rời danh sách</span>}
         </div>
-        <button className="icon-button detail-close" type="button" title="Đóng chi tiết" onClick={onClose}>
-          <X size={14} />
-        </button>
+        <div className="detail-actions">
+          {submission.active && student && (
+            <button
+              className="secondary-button compact"
+              type="button"
+              disabled={saving}
+              onClick={() => onGrantAttempt(student.id)}
+            >
+              {saving ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}
+              <span>Cấp thêm lượt</span>
+            </button>
+          )}
+          <button className="icon-button detail-close" type="button" title="Đóng chi tiết" onClick={onClose}>
+            <X size={14} />
+          </button>
+        </div>
       </div>
 
       <div className="detail-meta">
+        <div><span>Số lượt:</span> <b>{submission.attempt_count}/{submission.attempt_limit}</b></div>
+        {submission.attempt_no && <div><span>Lượt đang tính điểm:</span> <b>{submission.attempt_no}</b></div>}
         {submission.created_at && (
           <div><span>Bắt đầu:</span> <b>{formatDateTime(submission.created_at)}</b></div>
         )}
@@ -1758,7 +1885,33 @@ function SubmissionDetail({ submission, onClose }: { submission: SubmissionEntry
         )}
       </div>
 
-      {grade ? (
+      {submission.attempts.length > 0 && (
+        <div className="attempt-history">
+          <strong>Lịch sử làm bài</strong>
+          <div>
+            {submission.attempts.map((attempt) => (
+              <span key={attempt.id} className={attempt.attempt_no === submission.attempt_no ? "is-selected" : ""}>
+                Lượt {attempt.attempt_no}: {submissionStatusLabel(attempt.status)}
+                {attempt.total_score !== null && ` · ${formatScore(attempt.total_score, attempt.max_score)}`}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {submission.status === "not_started" ? (
+        <div className="detail-empty">
+          <BookOpen size={28} />
+          <strong>{student?.name ?? "Học sinh"} chưa bắt đầu làm bài.</strong>
+          <span>Khi học sinh vào bài, trạng thái sẽ tự cập nhật.</span>
+        </div>
+      ) : submission.status === "in_progress" && !grade ? (
+        <div className="detail-empty">
+          <Clock size={28} />
+          <strong>{student?.name ?? "Học sinh"} đang làm lượt {submission.attempt_no}.</strong>
+          <span>Bài làm chưa được nộp nên chưa có kết quả chấm.</span>
+        </div>
+      ) : grade ? (
         <>
           <div className="detail-scores">
             <div className="detail-total">
@@ -1958,12 +2111,13 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
         let nextAssignment = assignment;
         let submission = assignment.submission;
         if (!submission) {
-          const started = await autosaveSubmission(code, selectedStudentId, {});
+          const started = await startSubmissionAttempt(code, selectedStudentId);
           if (ignore) return;
           nextAssignment = await getAssignment(code, selectedStudentId);
           if (ignore) return;
           submission = nextAssignment.submission ?? {
             id: started.id,
+            attempt_no: started.attempt_no,
             status: started.status,
             answers: started.answers,
             created_at: started.created_at,
@@ -2076,12 +2230,55 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
     setError("");
   }
 
-  function beginStudentSession() {
+  async function beginStudentSession() {
     if (!selectedStudentId) {
       setError("Em hãy chọn đúng tên của mình trước khi bắt đầu làm bài.");
       return;
     }
-    setStudentSessionStarted(true);
+    if (selectedStudent?.status === "in_progress" || (selectedStudent?.status === "submitted" && !selectedStudent.can_start_new_attempt)) {
+      setStudentSessionStarted(true);
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await startSubmissionAttempt(code, selectedStudentId);
+      const updated = await getAssignment(code, selectedStudentId);
+      setLoadedAssignment(updated);
+      setAnswers(updated.submission?.answers ?? {});
+      setStartedAt(updated.submission?.created_at ?? null);
+      setSubmitted(false);
+      setGrade(null);
+      setTimeExpired(false);
+      setStudentQuestionIndex(0);
+      setStudentSessionStarted(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không thể bắt đầu lượt làm bài.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleStartNextAttempt() {
+    if (!selectedStudentId) return;
+    setSaving(true);
+    setError("");
+    try {
+      await startSubmissionAttempt(code, selectedStudentId);
+      const updated = await getAssignment(code, selectedStudentId);
+      setLoadedAssignment(updated);
+      setAnswers(updated.submission?.answers ?? {});
+      setStartedAt(updated.submission?.created_at ?? null);
+      setRemainingSeconds(null);
+      setTimeExpired(false);
+      setSubmitted(false);
+      setGrade(null);
+      setStudentQuestionIndex(0);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không thể bắt đầu lượt làm tiếp theo.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   if (busy) {
@@ -2141,7 +2338,7 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
             setSelectedStudentId(studentId);
             resetStudentWorkState();
           }}
-          onStart={beginStudentSession}
+          onStart={() => void beginStudentSession()}
         />
       ) : submitted ? (
         <StudentResultScreen
@@ -2154,6 +2351,11 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
           answeredCount={answeredCount}
           totalQuestions={studentQuestions.length}
           questions={studentQuestions}
+          attemptNo={loadedAssignment.submission?.attempt_no ?? selectedStudent?.attempt_count ?? 1}
+          attemptLimit={selectedStudent?.attempt_limit ?? loadedAssignment.max_attempts}
+          canStartNewAttempt={selectedStudent?.can_start_new_attempt ?? false}
+          saving={saving}
+          onStartNextAttempt={() => void handleStartNextAttempt()}
         />
       ) : (
         <>
@@ -2177,7 +2379,7 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
             >
               {loadedAssignment.students.map((student) => (
                 <option key={student.id} value={student.id}>
-                  {student.student_code} - {student.name}
+                  {student.student_code} - {student.name} · {student.attempt_count}/{student.attempt_limit} lượt
                 </option>
               ))}
             </select>
@@ -2290,18 +2492,25 @@ function StudentStartScreen({
         <option value="">Chọn tên học sinh...</option>
         {assignment.students.map((student) => (
           <option key={student.id} value={student.id}>
-            {student.student_code} - {student.name} {student.status === "submitted" ? "(đã nộp)" : ""}
+            {student.student_code} - {student.name} ({student.attempt_count}/{student.attempt_limit} lượt)
           </option>
         ))}
       </select>
       {selectedStudent && (
         <p className={`student-start-status ${selectedStudent.status}`}>
           Trạng thái: {selectedStudent.status === "submitted" ? "đã nộp" : selectedStudent.status === "in_progress" ? "đang làm" : "chưa bắt đầu"}
+          {` · Đã dùng ${selectedStudent.attempt_count}/${selectedStudent.attempt_limit} lượt`}
         </p>
       )}
       <button className="primary-button student-start-button" disabled={saving || !selectedStudentId} onClick={onStart}>
         {saving ? <LoaderCircle className="spin" size={20} /> : <Send size={20} />}
-        <span>Bắt đầu làm bài</span>
+        <span>
+          {selectedStudent?.status === "in_progress"
+            ? "Tiếp tục bài đang làm"
+            : selectedStudent?.status === "submitted"
+              ? selectedStudent.can_start_new_attempt ? "Làm lượt tiếp theo" : "Xem kết quả"
+              : "Bắt đầu làm bài"}
+        </span>
       </button>
     </section>
   );
@@ -2317,6 +2526,11 @@ function StudentResultScreen({
   answeredCount,
   totalQuestions,
   questions,
+  attemptNo,
+  attemptLimit,
+  canStartNewAttempt,
+  saving,
+  onStartNextAttempt,
 }: {
   grade: GradingResult | null;
   showScore: boolean;
@@ -2327,7 +2541,19 @@ function StudentResultScreen({
   answeredCount: number;
   totalQuestions: number;
   questions: StudentQuestionItem[];
+  attemptNo: number;
+  attemptLimit: number;
+  canStartNewAttempt: boolean;
+  saving: boolean;
+  onStartNextAttempt: () => void;
 }) {
+  const nextAttemptButton = canStartNewAttempt ? (
+    <button className="primary-button result-next-attempt" disabled={saving} onClick={onStartNextAttempt}>
+      {saving ? <LoaderCircle className="spin" size={18} /> : <RotateCcw size={18} />}
+      <span>Làm lượt tiếp theo</span>
+    </button>
+  ) : null;
+
   if (!showScore || !grade) {
     return (
       <section className="student-result-panel waiting">
@@ -2339,7 +2565,9 @@ function StudentResultScreen({
         <p>Chờ giáo viên công bố điểm. Bài làm của em đã được hệ thống ghi nhận.</p>
         <div className="result-mini-stats">
           <span>{answeredCount}/{totalQuestions} câu đã trả lời</span>
+          <span>Lượt {attemptNo}/{attemptLimit}</span>
         </div>
+        {nextAttemptButton}
       </section>
     );
   }
@@ -2365,6 +2593,11 @@ function StudentResultScreen({
         <div><span>PHẦN I</span><strong>{formatSectionScore(grade, "single_choice")}</strong></div>
         <div><span>PHẦN II</span><strong>{formatSectionScore(grade, "true_false")}</strong></div>
         <div><span>PHẦN III</span><strong>{formatSectionScore(grade, "short_answer")}</strong></div>
+      </div>
+
+      <div className="result-attempt-summary">
+        <span>Đã hoàn thành lượt {attemptNo}/{attemptLimit}</span>
+        {nextAttemptButton}
       </div>
 
       <div className="student-result-list">

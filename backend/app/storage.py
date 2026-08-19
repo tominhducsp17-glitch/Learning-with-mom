@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS students (
     class_id TEXT NOT NULL,
     name TEXT NOT NULL,
     student_code TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     FOREIGN KEY (class_id) REFERENCES classes(id),
     UNIQUE (class_id, student_code)
@@ -72,16 +73,30 @@ CREATE TABLE IF NOT EXISTS assignments (
     duration_minutes INTEGER NOT NULL DEFAULT 45,
     show_score INTEGER NOT NULL DEFAULT 0,
     show_answers INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 1,
+    score_policy TEXT NOT NULL DEFAULT 'highest',
     created_at TEXT NOT NULL,
     published_at TEXT NOT NULL,
     FOREIGN KEY (exam_id) REFERENCES exams(id),
     FOREIGN KEY (class_id) REFERENCES classes(id)
 );
 
+CREATE TABLE IF NOT EXISTS assignment_students (
+    assignment_id TEXT NOT NULL,
+    student_id TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    extra_attempts INTEGER NOT NULL DEFAULT 0,
+    assigned_at TEXT NOT NULL,
+    PRIMARY KEY (assignment_id, student_id),
+    FOREIGN KEY (assignment_id) REFERENCES assignments(id),
+    FOREIGN KEY (student_id) REFERENCES students(id)
+);
+
 CREATE TABLE IF NOT EXISTS submissions (
     id TEXT PRIMARY KEY,
     assignment_id TEXT NOT NULL,
     student_id TEXT NOT NULL,
+    attempt_no INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL,
     answers_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -89,7 +104,7 @@ CREATE TABLE IF NOT EXISTS submissions (
     submitted_at TEXT,
     FOREIGN KEY (assignment_id) REFERENCES assignments(id),
     FOREIGN KEY (student_id) REFERENCES students(id),
-    UNIQUE (assignment_id, student_id)
+    UNIQUE (assignment_id, student_id, attempt_no)
 );
 
 CREATE TABLE IF NOT EXISTS submission_grades (
@@ -113,6 +128,9 @@ ON assignments(code);
 
 CREATE INDEX IF NOT EXISTS idx_submissions_assignment_student
 ON submissions(assignment_id, student_id);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_students_assignment
+ON assignment_students(assignment_id, active);
 
 CREATE INDEX IF NOT EXISTS idx_submission_grades_submission_id
 ON submission_grades(submission_id);
@@ -147,6 +165,82 @@ class DraftStore:
             connection.execute(
                 "ALTER TABLE assignments ADD COLUMN show_answers INTEGER NOT NULL DEFAULT 0"
             )
+        if "max_attempts" not in assignment_columns:
+            connection.execute(
+                "ALTER TABLE assignments ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 1"
+            )
+        if "score_policy" not in assignment_columns:
+            connection.execute(
+                "ALTER TABLE assignments ADD COLUMN score_policy TEXT NOT NULL DEFAULT 'highest'"
+            )
+        connection.execute("UPDATE assignments SET score_policy = 'highest'")
+
+        student_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(students)").fetchall()
+        }
+        if "active" not in student_columns:
+            connection.execute(
+                "ALTER TABLE students ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
+            )
+
+        submission_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(submissions)").fetchall()
+        }
+        if "attempt_no" not in submission_columns:
+            connection.execute(
+                """
+                CREATE TABLE submissions_v2 (
+                    id TEXT PRIMARY KEY,
+                    assignment_id TEXT NOT NULL,
+                    student_id TEXT NOT NULL,
+                    attempt_no INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL,
+                    answers_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    submitted_at TEXT,
+                    FOREIGN KEY (assignment_id) REFERENCES assignments(id),
+                    FOREIGN KEY (student_id) REFERENCES students(id),
+                    UNIQUE (assignment_id, student_id, attempt_no)
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO submissions_v2 (
+                    id, assignment_id, student_id, attempt_no, status,
+                    answers_json, created_at, updated_at, submitted_at
+                )
+                SELECT
+                    id, assignment_id, student_id, 1, status,
+                    answers_json, created_at, updated_at, submitted_at
+                FROM submissions
+                """
+            )
+            connection.execute("DROP TABLE submissions")
+            connection.execute("ALTER TABLE submissions_v2 RENAME TO submissions")
+
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO assignment_students (
+                assignment_id, student_id, active, extra_attempts, assigned_at
+            )
+            SELECT a.id, s.id, 1, 0, a.published_at
+            FROM assignments a
+            JOIN students s ON s.class_id = a.class_id
+            WHERE s.active = 1
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_submissions_assignment_student "
+            "ON submissions(assignment_id, student_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_assignment_students_assignment "
+            "ON assignment_students(assignment_id, active)"
+        )
 
     def create(
         self,
@@ -291,44 +385,47 @@ class DraftStore:
             rows = connection.execute(
                 """
                 SELECT
-                    a.id, a.code, a.status, a.duration_minutes, a.show_score, a.show_answers, a.published_at,
+                    a.id, a.code, a.status, a.duration_minutes, a.show_score, a.show_answers,
+                    a.max_attempts, a.score_policy, a.published_at,
                     e.title, e.draft_id,
-                    c.name AS class_name,
-                    COUNT(DISTINCT s.id) AS student_count,
-                    COUNT(DISTINCT CASE WHEN sub.status = 'submitted' THEN sub.id END) AS submitted_count,
-                    AVG(g.total_score) AS average_score,
-                    MAX(g.max_score) AS max_score
+                    c.name AS class_name
                 FROM assignments a
                 JOIN exams e ON e.id = a.exam_id
                 JOIN classes c ON c.id = a.class_id
-                LEFT JOIN students s ON s.class_id = c.id
-                LEFT JOIN submissions sub ON sub.assignment_id = a.id AND sub.student_id = s.id
-                LEFT JOIN submission_grades g ON g.submission_id = sub.id
-                GROUP BY a.id
                 ORDER BY a.published_at DESC
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
-        return [
-            {
+        assignments = []
+        for row in rows:
+            results = self.get_assignment_results(row["code"])
+            submitted = [
+                item
+                for item in results["submissions"]
+                if item.get("active") and item["status"] == "submitted"
+            ]
+            scores = [float(item["total_score"]) for item in submitted if item["total_score"] is not None]
+            max_scores = [float(item["max_score"]) for item in submitted if item["max_score"] is not None]
+            assignments.append({
                 "id": row["id"],
                 "code": row["code"],
                 "status": row["status"],
                 "duration_minutes": row["duration_minutes"],
                 "show_score": bool(row["show_score"]),
                 "show_answers": bool(row["show_answers"]),
+                "max_attempts": int(row["max_attempts"]),
+                "score_policy": row["score_policy"],
                 "published_at": row["published_at"],
                 "title": row["title"],
                 "draft_id": row["draft_id"],
                 "class_name": row["class_name"],
-                "student_count": row["student_count"],
-                "submitted_count": row["submitted_count"],
-                "average_score": round(row["average_score"], 2) if row["average_score"] is not None else None,
-                "max_score": row["max_score"],
-            }
-            for row in rows
-        ]
+                "student_count": results["assignment"]["student_count"],
+                "submitted_count": len(submitted),
+                "average_score": round(sum(scores) / len(scores), 2) if scores else None,
+                "max_score": max(max_scores) if max_scores else None,
+            })
+        return assignments
 
     def list_classes(self) -> list[dict[str, Any]]:
         with closing(self._connect()) as connection:
@@ -343,6 +440,7 @@ class DraftStore:
                 """
                 SELECT id, class_id, name, student_code, created_at
                 FROM students
+                WHERE active = 1
                 ORDER BY class_id, student_code
                 """
             ).fetchall()
@@ -395,7 +493,6 @@ class DraftStore:
                 )
                 if cursor.rowcount == 0:
                     raise KeyError(class_id)
-                connection.execute("DELETE FROM students WHERE class_id = ?", (target_class_id,))
             else:
                 connection.execute(
                     """
@@ -404,16 +501,38 @@ class DraftStore:
                     """,
                     (target_class_id, cleaned_name, cleaned_school_year, now),
                 )
-            connection.executemany(
-                """
-                INSERT INTO students (id, class_id, name, student_code, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (uuid4().hex, target_class_id, student["name"], student["student_code"], now)
-                    for student in normalized_students
-                ],
-            )
+            existing_rows = connection.execute(
+                "SELECT id, student_code FROM students WHERE class_id = ?",
+                (target_class_id,),
+            ).fetchall()
+            existing_by_code = {row["student_code"]: row for row in existing_rows}
+            incoming_codes = {student["student_code"] for student in normalized_students}
+            for student in normalized_students:
+                existing = existing_by_code.get(student["student_code"])
+                if existing:
+                    connection.execute(
+                        """
+                        UPDATE students
+                        SET name = ?, active = 1
+                        WHERE id = ?
+                        """,
+                        (student["name"], existing["id"]),
+                    )
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO students (
+                            id, class_id, name, student_code, active, created_at
+                        ) VALUES (?, ?, ?, ?, 1, ?)
+                        """,
+                        (uuid4().hex, target_class_id, student["name"], student["student_code"], now),
+                    )
+            for code, existing in existing_by_code.items():
+                if code not in incoming_codes:
+                    connection.execute(
+                        "UPDATE students SET active = 0 WHERE id = ?",
+                        (existing["id"],),
+                    )
         return self.get_class(target_class_id)
 
     def get_class(self, class_id: str) -> dict[str, Any]:
@@ -429,6 +548,7 @@ class DraftStore:
         duration_minutes: int,
         show_score: bool = False,
         show_answers: bool = False,
+        max_attempts: int = 1,
     ) -> dict[str, Any]:
         draft = self.get(draft_id)
         exam = normalize_exam_for_save(draft["exam"])
@@ -437,6 +557,7 @@ class DraftStore:
         if not classroom["students"]:
             raise ValueError("Lớp cần ít nhất một học sinh trước khi giao đề.")
         safe_duration = max(1, min(int(duration_minutes), 300))
+        safe_max_attempts = max(1, min(int(max_attempts), 20))
         exam_id = uuid4().hex
         assignment_id = uuid4().hex
         code = self._new_assignment_code()
@@ -482,8 +603,9 @@ class DraftStore:
                 """
                 INSERT INTO assignments (
                     id, exam_id, class_id, code, status, duration_minutes,
-                    show_score, show_answers, created_at, published_at
-                ) VALUES (?, ?, ?, ?, 'published', ?, ?, ?, ?, ?)
+                    show_score, show_answers, max_attempts, score_policy,
+                    created_at, published_at
+                ) VALUES (?, ?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     assignment_id,
@@ -493,9 +615,19 @@ class DraftStore:
                     safe_duration,
                     int(show_score),
                     int(show_answers),
+                    safe_max_attempts,
+                    "highest",
                     now,
                     now,
                 ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO assignment_students (
+                    assignment_id, student_id, active, extra_attempts, assigned_at
+                ) VALUES (?, ?, 1, 0, ?)
+                """,
+                [(assignment_id, student["id"], now) for student in classroom["students"]],
             )
         return self.get_assignment_by_code(code, include_answers=True)
 
@@ -523,7 +655,8 @@ class DraftStore:
             assignment = connection.execute(
                 """
                 SELECT
-                    a.id, a.code, a.status, a.duration_minutes, a.show_score, a.show_answers, a.published_at,
+                    a.id, a.code, a.status, a.duration_minutes, a.show_score, a.show_answers,
+                    a.max_attempts, a.score_policy, a.published_at,
                     e.id AS exam_id, e.draft_id, e.title, e.exam_json,
                     c.id AS class_id, c.name AS class_name, c.school_year
                 FROM assignments a
@@ -537,28 +670,56 @@ class DraftStore:
                 raise KeyError(code)
             student_rows = connection.execute(
                 """
-                SELECT s.id, s.name, s.student_code, COALESCE(sub.status, 'not_started') AS status
-                FROM students s
-                LEFT JOIN submissions sub
-                    ON sub.student_id = s.id AND sub.assignment_id = ?
-                WHERE s.class_id = ?
+                SELECT s.id, s.name, s.student_code, ast.extra_attempts
+                FROM assignment_students ast
+                JOIN students s ON s.id = ast.student_id
+                WHERE ast.assignment_id = ? AND ast.active = 1
                 ORDER BY s.student_code
                 """,
-                (assignment["id"], assignment["class_id"]),
+                (assignment["id"],),
             ).fetchall()
-            submission = None
-            if student_id:
-                submission = connection.execute(
-                    """
-                    SELECT
-                        sub.id, sub.status, sub.answers_json, sub.created_at, sub.updated_at, sub.submitted_at,
-                        g.grading_detail_json
-                    FROM submissions sub
-                    LEFT JOIN submission_grades g ON g.submission_id = sub.id
-                    WHERE sub.assignment_id = ? AND sub.student_id = ?
-                    """,
-                    (assignment["id"], student_id),
-                ).fetchone()
+            attempt_rows = connection.execute(
+                """
+                SELECT
+                    sub.id, sub.student_id, sub.attempt_no, sub.status, sub.answers_json,
+                    sub.created_at, sub.updated_at, sub.submitted_at,
+                    g.total_score, g.max_score, g.grading_detail_json, g.graded_at
+                FROM submissions sub
+                LEFT JOIN submission_grades g ON g.submission_id = sub.id
+                WHERE sub.assignment_id = ?
+                ORDER BY sub.student_id, sub.attempt_no
+                """,
+                (assignment["id"],),
+            ).fetchall()
+        attempts_by_student: dict[str, list[sqlite3.Row]] = {}
+        for row in attempt_rows:
+            attempts_by_student.setdefault(row["student_id"], []).append(row)
+        students = []
+        for row in student_rows:
+            attempts = attempts_by_student.get(row["id"], [])
+            latest = attempts[-1] if attempts else None
+            attempt_limit = max(
+                len(attempts),
+                int(assignment["max_attempts"]) + int(row["extra_attempts"]),
+            )
+            students.append(
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "student_code": row["student_code"],
+                    "status": latest["status"] if latest else "not_started",
+                    "attempt_count": len(attempts),
+                    "attempt_limit": attempt_limit,
+                    "can_start_new_attempt": (
+                        (latest is None or latest["status"] == "submitted")
+                        and len(attempts) < attempt_limit
+                    ),
+                }
+            )
+        submission = None
+        if student_id:
+            student_attempts = attempts_by_student.get(student_id, [])
+            submission = student_attempts[-1] if student_attempts else None
         exam = json.loads(assignment["exam_json"])
         student_can_see_answers = (
             student_id
@@ -575,6 +736,8 @@ class DraftStore:
             "duration_minutes": assignment["duration_minutes"],
             "show_score": bool(assignment["show_score"]),
             "show_answers": bool(assignment["show_answers"]),
+            "max_attempts": int(assignment["max_attempts"]),
+            "score_policy": assignment["score_policy"],
             "published_at": assignment["published_at"],
             "exam_id": assignment["exam_id"],
             "draft_id": assignment["draft_id"],
@@ -584,20 +747,13 @@ class DraftStore:
                 "name": assignment["class_name"],
                 "school_year": assignment["school_year"],
             },
-            "students": [
-                {
-                    "id": row["id"],
-                    "name": row["name"],
-                    "student_code": row["student_code"],
-                    "status": row["status"],
-                }
-                for row in student_rows
-            ],
+            "students": students,
             "exam": exam,
         }
         if submission:
             payload["submission"] = {
                 "id": submission["id"],
+                "attempt_no": submission["attempt_no"],
                 "status": submission["status"],
                 "answers": json.loads(submission["answers_json"]),
                 "created_at": submission["created_at"],
@@ -607,6 +763,129 @@ class DraftStore:
             if assignment["show_score"] and submission["grading_detail_json"]:
                 payload["submission"]["grade"] = json.loads(submission["grading_detail_json"])
         return payload
+
+    def update_assignment_settings(
+        self,
+        code: str,
+        max_attempts: int,
+    ) -> dict[str, Any]:
+        safe_max_attempts = max(1, min(int(max_attempts), 20))
+        with closing(self._connect()) as connection, connection:
+            cursor = connection.execute(
+                """
+                UPDATE assignments
+                SET max_attempts = ?, score_policy = 'highest'
+                WHERE code = ?
+                """,
+                (safe_max_attempts, code),
+            )
+        if cursor.rowcount == 0:
+            raise KeyError(code)
+        return self.get_assignment_by_code(code, include_answers=True)
+
+    def sync_assignment_students(self, code: str) -> dict[str, Any]:
+        assignment = self.get_assignment_by_code(code, include_answers=True)
+        now = _utc_now()
+        with closing(self._connect()) as connection, connection:
+            class_rows = connection.execute(
+                "SELECT id FROM students WHERE class_id = ? AND active = 1",
+                (assignment["classroom"]["id"],),
+            ).fetchall()
+            class_student_ids = {row["id"] for row in class_rows}
+            membership_rows = connection.execute(
+                "SELECT student_id FROM assignment_students WHERE assignment_id = ?",
+                (assignment["id"],),
+            ).fetchall()
+            membership_ids = {row["student_id"] for row in membership_rows}
+            for student_id in class_student_ids:
+                if student_id in membership_ids:
+                    connection.execute(
+                        """
+                        UPDATE assignment_students
+                        SET active = 1
+                        WHERE assignment_id = ? AND student_id = ?
+                        """,
+                        (assignment["id"], student_id),
+                    )
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO assignment_students (
+                            assignment_id, student_id, active, extra_attempts, assigned_at
+                        ) VALUES (?, ?, 1, 0, ?)
+                        """,
+                        (assignment["id"], student_id, now),
+                    )
+            for student_id in membership_ids - class_student_ids:
+                connection.execute(
+                    """
+                    UPDATE assignment_students
+                    SET active = 0
+                    WHERE assignment_id = ? AND student_id = ?
+                    """,
+                    (assignment["id"], student_id),
+                )
+        return self.get_assignment_by_code(code, include_answers=True)
+
+    def grant_extra_attempt(self, code: str, student_id: str) -> dict[str, Any]:
+        assignment = self.get_assignment_by_code(code, include_answers=True)
+        with closing(self._connect()) as connection, connection:
+            cursor = connection.execute(
+                """
+                UPDATE assignment_students
+                SET extra_attempts = extra_attempts + 1
+                WHERE assignment_id = ? AND student_id = ? AND active = 1
+                """,
+                (assignment["id"], student_id),
+            )
+        if cursor.rowcount == 0:
+            raise KeyError(student_id)
+        return self.get_assignment_results(code)
+
+    def start_submission_attempt(self, assignment_code: str, student_id: str) -> dict[str, Any]:
+        assignment = self.get_assignment_by_code(assignment_code, include_answers=True)
+        student = next((item for item in assignment["students"] if item["id"] == student_id), None)
+        if student is None:
+            raise KeyError(student_id)
+        now = _utc_now()
+        with closing(self._connect()) as connection, connection:
+            rows = connection.execute(
+                """
+                SELECT id, attempt_no, status, answers_json, created_at, updated_at, submitted_at
+                FROM submissions
+                WHERE assignment_id = ? AND student_id = ?
+                ORDER BY attempt_no
+                """,
+                (assignment["id"], student_id),
+            ).fetchall()
+            latest = rows[-1] if rows else None
+            if latest and latest["status"] == "in_progress":
+                return _submission_response(assignment_code, student_id, latest)
+            if len(rows) >= int(student["attempt_limit"]):
+                raise ValueError("Học sinh đã sử dụng hết số lượt làm bài.")
+            attempt_no = (int(latest["attempt_no"]) + 1) if latest else 1
+            submission_id = uuid4().hex
+            connection.execute(
+                """
+                INSERT INTO submissions (
+                    id, assignment_id, student_id, attempt_no, status,
+                    answers_json, created_at, updated_at, submitted_at
+                ) VALUES (?, ?, ?, ?, 'in_progress', '{}', ?, ?, NULL)
+                """,
+                (submission_id, assignment["id"], student_id, attempt_no, now, now),
+            )
+        return {
+            "id": submission_id,
+            "assignment_code": assignment_code,
+            "student_id": student_id,
+            "attempt_no": attempt_no,
+            "status": "in_progress",
+            "answers": {},
+            "created_at": now,
+            "updated_at": now,
+            "submitted_at": None,
+            "grade": None,
+        }
 
     def update_assignment_visibility(
         self,
@@ -645,12 +924,16 @@ class DraftStore:
         with closing(self._connect()) as connection, connection:
             existing = connection.execute(
                 """
-                SELECT id, created_at, submitted_at
+                SELECT id, attempt_no, status, created_at, submitted_at
                 FROM submissions
                 WHERE assignment_id = ? AND student_id = ?
+                ORDER BY attempt_no DESC
+                LIMIT 1
                 """,
                 (assignment["id"], student_id),
             ).fetchone()
+            if existing and existing["status"] == "submitted":
+                raise ValueError("Lượt làm hiện tại đã được nộp. Hãy bắt đầu lượt mới.")
             if existing:
                 submitted_at = submitted_at or existing["submitted_at"]
                 connection.execute(
@@ -668,20 +951,24 @@ class DraftStore:
                     ),
                 )
                 submission_id = existing["id"]
+                attempt_no = int(existing["attempt_no"])
                 created_at = existing["created_at"]
             else:
                 submission_id = uuid4().hex
+                attempt_no = 1
                 created_at = now
                 connection.execute(
                     """
                     INSERT INTO submissions (
-                        id, assignment_id, student_id, status, answers_json, created_at, updated_at, submitted_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        id, assignment_id, student_id, attempt_no, status,
+                        answers_json, created_at, updated_at, submitted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         submission_id,
                         assignment["id"],
                         student_id,
+                        attempt_no,
                         status,
                         json.dumps(answers, ensure_ascii=False),
                         now,
@@ -695,6 +982,7 @@ class DraftStore:
             "id": submission_id,
             "assignment_code": assignment_code,
             "student_id": student_id,
+            "attempt_no": attempt_no,
             "status": status,
             "answers": answers,
             "created_at": created_at,
@@ -706,26 +994,66 @@ class DraftStore:
     def get_assignment_results(self, code: str) -> dict[str, Any]:
         assignment = self.get_assignment_by_code(code, include_answers=True)
         with closing(self._connect()) as connection:
+            membership_rows = connection.execute(
+                """
+                SELECT
+                    s.id, s.name, s.student_code, ast.active, ast.extra_attempts
+                FROM assignment_students ast
+                JOIN students s ON s.id = ast.student_id
+                WHERE ast.assignment_id = ?
+                ORDER BY ast.active DESC, s.student_code
+                """,
+                (assignment["id"],),
+            ).fetchall()
             rows = connection.execute(
                 """
                 SELECT
-                    sub.id, sub.student_id, sub.status, sub.answers_json, sub.created_at, sub.updated_at, sub.submitted_at,
+                    sub.id, sub.student_id, sub.attempt_no, sub.status, sub.answers_json,
+                    sub.created_at, sub.updated_at, sub.submitted_at,
                     g.total_score, g.max_score, g.grading_detail_json, g.graded_at
                 FROM submissions sub
                 LEFT JOIN submission_grades g ON g.submission_id = sub.id
                 WHERE sub.assignment_id = ?
-                ORDER BY sub.updated_at DESC
+                ORDER BY sub.student_id, sub.attempt_no
                 """,
                 (assignment["id"],),
             ).fetchall()
-        rows_by_student = {row["student_id"]: row for row in rows}
+        rows_by_student: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            rows_by_student.setdefault(row["student_id"], []).append(row)
         submission_results = []
-        for student in assignment["students"]:
-            row = rows_by_student.get(student["id"])
-            if row:
-                submission_results.append(_submission_row_to_result(row, student))
-            else:
-                submission_results.append(_empty_submission_result(assignment["id"], student))
+        for membership in membership_rows:
+            student = {
+                "id": membership["id"],
+                "name": membership["name"],
+                "student_code": membership["student_code"],
+            }
+            attempts = [
+                _submission_row_to_result(row, student)
+                for row in rows_by_student.get(student["id"], [])
+            ]
+            selected = _select_attempt(attempts)
+            result = dict(selected) if selected else _empty_submission_result(assignment["id"], student)
+            attempt_limit = max(
+                len(attempts),
+                int(assignment["max_attempts"]) + int(membership["extra_attempts"]),
+            )
+            latest = attempts[-1] if attempts else None
+            result.update(
+                {
+                    "active": bool(membership["active"]),
+                    "attempts": attempts,
+                    "attempt_count": len(attempts),
+                    "attempt_limit": attempt_limit,
+                    "can_start_new_attempt": (
+                        bool(membership["active"])
+                        and (latest is None or latest["status"] == "submitted")
+                        and len(attempts) < attempt_limit
+                    ),
+                }
+            )
+            submission_results.append(result)
+        active_count = sum(1 for row in membership_rows if row["active"])
         return {
             "assignment": {
                 "id": assignment["id"],
@@ -734,8 +1062,10 @@ class DraftStore:
                 "duration_minutes": assignment["duration_minutes"],
                 "show_score": assignment["show_score"],
                 "show_answers": assignment["show_answers"],
+                "max_attempts": assignment["max_attempts"],
+                "score_policy": assignment["score_policy"],
                 "classroom": assignment["classroom"],
-                "student_count": len(assignment["students"]),
+                "student_count": active_count,
             },
             "submissions": submission_results,
         }
@@ -892,6 +1222,7 @@ def _submission_row_to_result(row: sqlite3.Row, student: dict[str, Any] | None) 
     grading_detail = json.loads(row["grading_detail_json"]) if row["grading_detail_json"] else None
     return {
         "id": row["id"],
+        "attempt_no": int(row["attempt_no"]),
         "student": student,
         "status": row["status"],
         "answers": json.loads(row["answers_json"]),
@@ -908,6 +1239,7 @@ def _submission_row_to_result(row: sqlite3.Row, student: dict[str, Any] | None) 
 def _empty_submission_result(assignment_id: str, student: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": f"{assignment_id}:{student['id']}:not-started",
+        "attempt_no": None,
         "student": student,
         "status": "not_started",
         "answers": {},
@@ -921,13 +1253,49 @@ def _empty_submission_result(assignment_id: str, student: dict[str, Any]) -> dic
     }
 
 
+def _select_attempt(attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not attempts:
+        return None
+    submitted = [attempt for attempt in attempts if attempt["status"] == "submitted"]
+    if not submitted:
+        return attempts[-1]
+    return max(
+        submitted,
+        key=lambda attempt: (
+            float(attempt["total_score"] or 0),
+            int(attempt["attempt_no"] or 0),
+        ),
+    )
+
+
+def _submission_response(
+    assignment_code: str,
+    student_id: str,
+    row: sqlite3.Row,
+) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "assignment_code": assignment_code,
+        "student_id": student_id,
+        "attempt_no": int(row["attempt_no"]),
+        "status": row["status"],
+        "answers": json.loads(row["answers_json"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "submitted_at": row["submitted_at"],
+        "grade": None,
+    }
+
+
 def build_assignment_analytics(results: dict[str, Any]) -> dict[str, Any]:
     submissions = results["submissions"]
     student_count = int(results.get("assignment", {}).get("student_count") or len(submissions))
     submitted = [
         submission
         for submission in submissions
-        if submission["status"] == "submitted" and submission["grading_detail"]
+        if submission.get("active", True)
+        and submission["status"] == "submitted"
+        and submission["grading_detail"]
     ]
     scores = [float(submission["total_score"] or 0) for submission in submitted]
     max_score = max((float(submission["max_score"] or 0) for submission in submitted), default=0.0)

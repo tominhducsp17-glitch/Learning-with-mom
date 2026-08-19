@@ -129,6 +129,9 @@ export type Student = {
   name: string;
   student_code: string;
   status: "not_started" | "in_progress" | "submitted";
+  attempt_count: number;
+  attempt_limit: number;
+  can_start_new_attempt: boolean;
 };
 
 export type Classroom = {
@@ -155,6 +158,8 @@ export type Assignment = {
   duration_minutes: number;
   show_score: boolean;
   show_answers: boolean;
+  max_attempts: number;
+  score_policy: "first" | "latest" | "highest";
   published_at: string;
   exam_id: string;
   draft_id: string;
@@ -164,6 +169,7 @@ export type Assignment = {
   exam: ParsedExam;
   submission?: {
     id: string;
+    attempt_no: number;
     status: "in_progress" | "submitted";
     answers: Record<string, unknown>;
     created_at: string;
@@ -180,6 +186,8 @@ export type AssignmentSummary = {
   duration_minutes: number;
   show_score: boolean;
   show_answers: boolean;
+  max_attempts: number;
+  score_policy: "first" | "latest" | "highest";
   published_at: string;
   title: string;
   draft_id: string;
@@ -223,6 +231,7 @@ export type SubmissionResult = {
   id: string;
   assignment_code: string;
   student_id: string;
+  attempt_no: number;
   status: "in_progress" | "submitted";
   answers: Record<string, unknown>;
   created_at: string;
@@ -250,12 +259,15 @@ export type AssignmentResults = {
     duration_minutes: number;
     show_score: boolean;
     show_answers: boolean;
+    max_attempts: number;
+    score_policy: "first" | "latest" | "highest";
     student_count: number;
     classroom: Classroom;
   };
   submissions: Array<{
     id: string;
     student: Student | null;
+    attempt_no: number | null;
     status: "not_started" | "in_progress" | "submitted";
     answers: Record<string, unknown>;
     created_at: string | null;
@@ -265,6 +277,24 @@ export type AssignmentResults = {
     total_score: number | null;
     max_score: number | null;
     grading_detail: GradingResult | null;
+    active: boolean;
+    attempt_count: number;
+    attempt_limit: number;
+    can_start_new_attempt: boolean;
+    attempts: Array<{
+      id: string;
+      student: Student | null;
+      attempt_no: number;
+      status: "in_progress" | "submitted";
+      answers: Record<string, unknown>;
+      created_at: string;
+      updated_at: string;
+      submitted_at: string | null;
+      graded_at: string | null;
+      total_score: number | null;
+      max_score: number | null;
+      grading_detail: GradingResult | null;
+    }>;
   }>;
 };
 
