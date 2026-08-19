@@ -609,25 +609,6 @@ function App() {
             {saving ? <LoaderCircle className="spin" size={18} /> : dirty ? <Save size={18} /> : <Check size={18} />}
             <span>{saving ? "Đang lưu" : dirty ? "Lưu bản nháp" : "Đã lưu"}</span>
           </button>
-          <div className="topbar-duration" title="Thời gian làm bài">
-            <Clock size={17} />
-            <input
-              aria-label="Thời gian làm bài, phút"
-              type="number"
-              min="1"
-              max="300"
-              value={durationMinutes}
-              onChange={(event) => {
-                const value = Number(event.target.value);
-                setDurationMinutes(Number.isFinite(value) ? Math.max(1, Math.min(300, value)) : 45);
-              }}
-            />
-            <span>phút</span>
-          </div>
-          <button className="primary-button" disabled={dirty || publishing || !selectedClassId} onClick={() => void handlePublishDemo()}>
-            {publishing ? <LoaderCircle className="spin" size={18} /> : <Users size={18} />}
-            <span>{publishing ? "Đang giao" : "Giao bài"}</span>
-          </button>
           <button className="secondary-button" onClick={() => setShowClassManager((value) => !value)}>
             <Users size={18} />
             <span>Lớp học</span>
@@ -733,25 +714,6 @@ function App() {
             <Users size={18} />
             <strong>Lớp {assignment.classroom.name}</strong>
             <span>{assignment.students.length} học sinh · {assignment.duration_minutes} phút · {assignment.max_attempts} lượt</span>
-          </div>
-          <div className="publish-visibility">
-            <label>
-              <input
-                type="checkbox"
-                checked={assignment.show_score}
-                onChange={(event) => void handleVisibilityChange(event.target.checked, event.target.checked ? assignment.show_answers : false)}
-              />
-              <span>Công bố điểm</span>
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={assignment.show_answers}
-                disabled={!assignment.show_score}
-                onChange={(event) => void handleVisibilityChange(assignment.show_score, event.target.checked)}
-              />
-              <span>Công bố đáp án</span>
-            </label>
           </div>
           <div className="publish-link">
             <Link size={17} />

@@ -879,37 +879,6 @@ button:disabled {
   gap: 8px;
 }
 
-.topbar-duration {
-  height: 38px;
-  display: inline-grid;
-  grid-template-columns: auto 42px auto;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  border: 1px solid #d8cef8;
-  border-radius: 6px;
-  color: var(--purple);
-  background: #ffffff;
-  font-weight: 800;
-  box-shadow: 0 4px 0 rgba(111, 90, 232, 0.12);
-}
-
-.topbar-duration input {
-  width: 42px;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  color: var(--ink);
-  background: transparent;
-  text-align: center;
-  font-weight: 900;
-}
-
-.topbar-duration span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .icon-button,
 .primary-button,
 .secondary-button {
@@ -1151,7 +1120,7 @@ button:disabled {
 
 .publish-strip {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   gap: 14px;
   align-items: center;
   padding: 10px 22px;
@@ -1162,30 +1131,11 @@ button:disabled {
 
 .publish-strip > div,
 .publish-link,
-.publish-actions,
-.publish-visibility,
-.publish-visibility label {
+.publish-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-}
-
-.publish-visibility {
-  flex-wrap: wrap;
-}
-
-.publish-visibility label {
-  padding: 5px 8px;
-  border-radius: 8px;
-  background: #ffffff;
-  color: #5b5574;
-  font-size: 12px;
-  font-weight: 850;
-}
-
-.publish-visibility input {
-  accent-color: var(--purple);
 }
 
 .publish-actions .icon-button {
@@ -3130,20 +3080,6 @@ button:disabled {
 
   .title-input {
     width: 45vw;
-  }
-
-  .topbar-duration {
-    grid-template-columns: auto 34px;
-    width: 74px;
-    padding: 0 7px;
-  }
-
-  .topbar-duration span {
-    display: none;
-  }
-
-  .topbar-duration input {
-    width: 34px;
   }
 
   .primary-button {
