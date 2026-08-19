@@ -451,6 +451,20 @@ button:disabled {
   font-weight: 950;
 }
 
+.hero-greeting {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.hero-greeting svg {
+  width: 0.9em;
+  height: 0.9em;
+  flex: 0 0 auto;
+  color: var(--coral);
+  stroke-width: 2.5;
+}
+
 .hero-copy p:last-child {
   max-width: 760px;
   margin: 22px 0 0;
@@ -2951,6 +2965,11 @@ button:disabled {
 
   .hero-copy h1 {
     font-size: 38px;
+  }
+
+  .hero-greeting {
+    align-items: flex-start;
+    gap: 12px;
   }
 
   .hero-copy p:last-child {

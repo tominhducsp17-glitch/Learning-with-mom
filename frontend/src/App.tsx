@@ -19,6 +19,7 @@ import {
   Link,
   LoaderCircle,
   MessageCircle,
+  PartyPopper,
   Pencil,
   RotateCcw,
   Save,
@@ -985,8 +986,17 @@ function HomeScreen({
       <section className="hero-board">
         <div className="hero-copy">
           <p className="eyebrow">{isTeacher ? "Không gian giáo viên" : "Không gian học sinh"}</p>
-          <h1>{isTeacher ? "Biến đề Word thành bài kiểm tra online." : "Vào bài kiểm tra thật nhanh."}</h1>
-          <p>{isTeacher ? "Upload file Azota, kiểm tra công thức, giao cho lớp và xem điểm ngay trong một luồng làm việc gọn gàng." : "Nhập mã bài hoặc chọn bài đã giao để bắt đầu làm bài trên máy tính."}</p>
+          {isTeacher ? (
+            <h1 className="hero-greeting">
+              <span>Cùng học với cô Tuyết nhé</span>
+              <PartyPopper aria-hidden="true" />
+            </h1>
+          ) : (
+            <>
+              <h1>Vào bài kiểm tra thật nhanh.</h1>
+              <p>Nhập mã bài hoặc chọn bài đã giao để bắt đầu làm bài trên máy tính.</p>
+            </>
+          )}
         </div>
         <div className="hero-stack" aria-hidden="true">
           <span className="hero-card pdf">DOCX</span>
