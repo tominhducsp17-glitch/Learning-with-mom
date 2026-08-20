@@ -37,6 +37,9 @@ def ask_chatbot(
     gemini_model: str = "gemini-3.1-flash-lite",
     openrouter_api_key: str = "",
     openrouter_model: str = "nvidia/nemotron-nano-12b-v2-vl:free",
+    tokenrouter_api_key: str = "",
+    tokenrouter_base_url: str = "https://api.tokenrouter.com/v1",
+    tokenrouter_model: str = "deepseek/deepseek-v4-flash",
     nvidia_api_key: str = "",
     nvidia_model: str = "nvidia/nemotron-3-nano-30b-a3b",
     system_prompt: str = SYSTEM_PROMPT,
@@ -83,6 +86,16 @@ def ask_chatbot(
             model=openrouter_model,
             system_prompt=system_prompt,
         )
+    if provider == "tokenrouter":
+        return _ask_tokenrouter(
+            message=cleaned_message,
+            context=context,
+            history=safe_history,
+            api_key=tokenrouter_api_key,
+            base_url=tokenrouter_base_url,
+            model=tokenrouter_model,
+            system_prompt=system_prompt,
+        )
     if provider == "nvidia":
         return _ask_nvidia(
             message=cleaned_message,
@@ -92,7 +105,10 @@ def ask_chatbot(
             model=nvidia_model,
             system_prompt=system_prompt,
         )
-    raise ValueError(f"AI_PROVIDER khong ho tro: {provider}. Hay dung openai, gemini, openrouter hoac nvidia.")
+    raise ValueError(
+        f"AI_PROVIDER khong ho tro: {provider}. "
+        "Hay dung openai, gemini, openrouter, tokenrouter hoac nvidia."
+    )
 
 
 def _ask_gemini(
@@ -313,6 +329,51 @@ def _ask_nvidia(
     text = _extract_chat_completion_text(data)
     if not text:
         raise RuntimeError("NVIDIA chatbot khong tra ve noi dung.")
+    return text
+
+
+def _ask_tokenrouter(
+    *,
+    message: str,
+    context: str,
+    history: list[dict[str, str]],
+    api_key: str,
+    base_url: str,
+    model: str,
+    system_prompt: str,
+) -> str:
+    if not api_key.strip():
+        raise ValueError("TOKENROUTER_API_KEY chua duoc cau hinh.")
+    if not base_url.strip():
+        raise ValueError("TOKENROUTER_BASE_URL chua duoc cau hinh.")
+    messages = _chat_completion_messages(message, context, history, system_prompt)
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 700,
+    }
+    request = urllib.request.Request(
+        base_url.strip().rstrip("/") + "/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"TokenRouter chatbot loi {exc.code}: {detail[:800]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Khong ket noi duoc TokenRouter chatbot: {exc.reason}") from exc
+
+    text = _extract_chat_completion_text(data)
+    if not text:
+        raise RuntimeError("TokenRouter chatbot khong tra ve noi dung.")
     return text
 
 

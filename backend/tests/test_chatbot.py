@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -11,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from backend.app.main import _friendly_ai_error_message, _markup_to_chat_text
 from backend.app.services.chatbot import (
     SYSTEM_PROMPT,
+    _ask_tokenrouter,
     _extract_chat_completion_text,
     _extract_gemini_text,
     _extract_openai_text,
@@ -56,6 +58,35 @@ class ChatbotHelpersTest(unittest.TestCase):
         self.assertIn("API key", message)
         self.assertNotIn("googleapis", message)
         self.assertNotIn("API_KEY_INVALID", message)
+
+    def test_friendly_ai_error_recognizes_credit_exhaustion_before_http_403(self) -> None:
+        message = _friendly_ai_error_message(
+            RuntimeError("TokenRouter chatbot loi 403: insufficient_user_quota; credit limit $0; recharge")
+        )
+
+        self.assertIn("hết credit", message)
+        self.assertNotIn("API key", message)
+
+    @patch("backend.app.services.chatbot.urllib.request.urlopen")
+    def test_tokenrouter_uses_openai_compatible_chat_endpoint(self, urlopen) -> None:
+        response = urlopen.return_value.__enter__.return_value
+        response.read.return_value = b'{"choices":[{"message":{"content":"Dung roi."}}]}'
+
+        answer = _ask_tokenrouter(
+            message="Tai sao?",
+            context="Cau hoi tap hop.",
+            history=[],
+            api_key="secret",
+            base_url="https://api.tokenrouter.com/v1/",
+            model="deepseek/deepseek-v4-flash",
+            system_prompt="Giai thich ngan gon.",
+        )
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual("Dung roi.", answer)
+        self.assertEqual("https://api.tokenrouter.com/v1/chat/completions", request.full_url)
+        self.assertIn(b'"model": "deepseek/deepseek-v4-flash"', request.data)
+        self.assertEqual("Bearer secret", request.get_header("Authorization"))
 
 
 if __name__ == "__main__":

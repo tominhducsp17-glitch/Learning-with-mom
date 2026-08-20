@@ -243,6 +243,7 @@ def health() -> dict[str, Any]:
             "gemini_configured": bool(settings.gemini_api_keys),
             "gemini_key_count": len(settings.gemini_api_keys),
             "openrouter_configured": bool(settings.openrouter_api_key.strip()),
+            "tokenrouter_configured": bool(settings.tokenrouter_api_key.strip()),
             "nvidia_configured": bool(settings.nvidia_api_key.strip()),
             "nvidia_ocr_base_url_configured": bool(settings.nvidia_ocr_base_url),
             "ocr_providers_available": _configured_ocr_providers(),
@@ -252,6 +253,7 @@ def health() -> dict[str, Any]:
                 "gemini": settings.gemini_model,
                 "openrouter_ocr": settings.openrouter_ocr_model,
                 "openrouter_chat": settings.openrouter_chat_model,
+                "tokenrouter_chat": settings.tokenrouter_chat_model,
                 "nvidia_ocr": settings.nvidia_ocr_model,
                 "nvidia_chat": settings.nvidia_chat_model,
             },
@@ -810,6 +812,8 @@ def _configured_chat_providers() -> tuple[str, ...]:
             providers.append(provider)
         elif provider == "openrouter" and settings.openrouter_api_key.strip():
             providers.append(provider)
+        elif provider == "tokenrouter" and settings.tokenrouter_api_key.strip():
+            providers.append(provider)
         elif provider == "nvidia" and settings.nvidia_api_key.strip():
             providers.append(provider)
     return tuple(providers)
@@ -822,6 +826,8 @@ def _provider_model_name(provider: str, *, kind: str) -> str:
         return settings.openai_model
     if provider == "openrouter":
         return settings.openrouter_chat_model if kind == "chat" else settings.openrouter_ocr_model
+    if provider == "tokenrouter":
+        return settings.tokenrouter_chat_model if kind == "chat" else ""
     if provider == "nvidia":
         return settings.nvidia_chat_model if kind == "chat" else settings.nvidia_ocr_model
     return ""
@@ -882,6 +888,9 @@ def _ask_chatbot_with_provider(
         gemini_model=settings.gemini_model,
         openrouter_api_key=settings.openrouter_api_key,
         openrouter_model=settings.openrouter_chat_model,
+        tokenrouter_api_key=settings.tokenrouter_api_key,
+        tokenrouter_base_url=settings.tokenrouter_base_url,
+        tokenrouter_model=settings.tokenrouter_chat_model,
         nvidia_api_key=settings.nvidia_api_key,
         nvidia_model=settings.nvidia_chat_model,
     )
@@ -1063,10 +1072,21 @@ def _chunks(items: list[tuple[str, Path]], size: int) -> list[list[tuple[str, Pa
 
 def _friendly_ai_error_message(exc: Exception) -> str:
     text = str(exc).lower()
+    if any(
+        marker in text
+        for marker in (
+            " 429",
+            "quota",
+            "rate",
+            "resource_exhausted",
+            "insufficient_user_quota",
+            "credit limit",
+            "recharge",
+        )
+    ):
+        return "Trợ lý AI đang tạm hết lượt sử dụng hoặc tài khoản AI đã hết credit. Em thử lại sau nhé."
     if any(marker in text for marker in ("api_key_invalid", "api key not valid", " 401", " 403", "permission_denied")):
         return "Trợ lý AI chưa dùng được vì API key đang sai hoặc chưa được cấu hình đúng. Giáo viên cần kiểm tra lại khóa API."
-    if any(marker in text for marker in (" 429", "quota", "rate", "resource_exhausted")):
-        return "Trợ lý AI đang tạm hết lượt dùng miễn phí hoặc bị giới hạn tốc độ. Em thử lại sau ít phút nhé."
     if any(marker in text for marker in ("timeout", "timed out", "khong ket noi", "unavailable", " 503")):
         return "Trợ lý AI đang khó kết nối. Em thử lại sau một lát nhé."
     return "Trợ lý AI chưa trả lời được lúc này. Giáo viên có thể kiểm tra cấu hình AI sau."

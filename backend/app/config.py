@@ -76,6 +76,9 @@ class Settings:
     openrouter_api_key: str
     openrouter_ocr_model: str
     openrouter_chat_model: str
+    tokenrouter_api_key: str
+    tokenrouter_base_url: str
+    tokenrouter_chat_model: str
     nvidia_api_key: str
     nvidia_ocr_model: str
     nvidia_ocr_base_url: str
@@ -139,6 +142,9 @@ def get_settings() -> Settings:
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
         openrouter_ocr_model=os.getenv("OPENROUTER_OCR_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free"),
         openrouter_chat_model=os.getenv("OPENROUTER_CHAT_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free"),
+        tokenrouter_api_key=os.getenv("TOKENROUTER_API_KEY", "").strip(),
+        tokenrouter_base_url=os.getenv("TOKENROUTER_BASE_URL", "https://api.tokenrouter.com/v1").strip().rstrip("/"),
+        tokenrouter_chat_model=os.getenv("TOKENROUTER_CHAT_MODEL", "deepseek/deepseek-v4-flash").strip(),
         nvidia_api_key=os.getenv("NVIDIA_API_KEY", "").strip(),
         nvidia_ocr_model=os.getenv("NVIDIA_OCR_MODEL", "nvidia/nemotron-ocr-v2"),
         nvidia_ocr_base_url=os.getenv("NVIDIA_OCR_BASE_URL", "").strip().rstrip("/"),
