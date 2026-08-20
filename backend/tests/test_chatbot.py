@@ -9,7 +9,7 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.app.main import _friendly_ai_error_message, _markup_to_chat_text
+from backend.app.main import _build_chat_question_context, _friendly_ai_error_message, _markup_to_chat_text
 from backend.app.services.chatbot import (
     SYSTEM_PROMPT,
     _ask_tokenrouter,
@@ -33,6 +33,29 @@ class ChatbotHelpersTest(unittest.TestCase):
 
         self.assertIn("\\(x+1\\)", text)
         self.assertIn("anh cong thuc img_0001", text)
+
+    def test_true_false_chat_context_serializes_structured_answers(self) -> None:
+        context = _build_chat_question_context(
+            assignment={"title": "De tap hop", "classroom": {"name": "Lop 10"}},
+            question={
+                "number": 4,
+                "prompt_markup": "Cho cac tap hop",
+                "statements_markup": {"a": "A thuoc B", "b": "B thuoc X"},
+                "correct_answer": {"a": "D", "b": "S"},
+            },
+            section_type="true_false",
+            detail={
+                "correct": False,
+                "score": 0.5,
+                "max_score": 1,
+                "items": {"a": {"actual": "S", "expected": "D", "correct": False}},
+            },
+            student_answer={"a": "S", "b": "S"},
+        )
+
+        self.assertIn('Hoc sinh tra loi: {"a": "S", "b": "S"}', context)
+        self.assertIn('Dap an dung: {"a": "D", "b": "S"}', context)
+        self.assertIn("Chi tiet tung y:", context)
 
     def test_extract_gemini_text(self) -> None:
         payload = {"candidates": [{"content": {"parts": [{"text": "Giai thich ngan gon."}]}}]}
