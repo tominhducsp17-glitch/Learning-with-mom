@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode, RefObject } from "react";
+import type { CSSProperties, FormEvent, ReactNode, RefObject } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import {
@@ -16,8 +16,11 @@ import {
   Flower2,
   GraduationCap,
   ImageOff,
+  KeyRound,
   Link,
   LoaderCircle,
+  LockKeyhole,
+  LogOut,
   MessageCircle,
   PartyPopper,
   Pencil,
@@ -34,6 +37,8 @@ import {
   askStudentChat,
   assignmentCsvUrl,
   assignmentXlsxUrl,
+  changeAdminPassword,
+  getAdminSession,
   getAssignment,
   getAssignmentAnalytics,
   getClasses,
@@ -42,6 +47,8 @@ import {
   getAssignmentResults,
   grantAssignmentAttempt,
   importExam,
+  loginAdmin,
+  logoutAdmin,
   publishAssignment,
   rerunExamOcr,
   regradeAssignment,
@@ -54,6 +61,7 @@ import {
   updateAssignmentAttemptSettings,
   updateAssignmentVisibility,
 } from "./api";
+import type { AdminSession } from "./api";
 import type {
   Assignment,
   AssignmentAnalytics,
@@ -85,7 +93,13 @@ const SECTION_NAMES: Record<SectionType, string> = {
 };
 
 function App() {
-  const [studentCode, setStudentCode] = useState(() => studentCodeFromHash());
+  const initialStudentRoute = studentRouteFromHash();
+  const [studentMode, setStudentMode] = useState(initialStudentRoute !== null);
+  const [studentCode, setStudentCode] = useState(initialStudentRoute ?? "");
+  const [adminSession, setAdminSession] = useState<AdminSession | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [draft, setDraft] = useState<ExamDraft | null>(null);
   const [assignment, setAssignment] = useState<Assignment | null>(null);
   const [assignmentResults, setAssignmentResults] = useState<AssignmentResults | null>(null);
@@ -116,15 +130,39 @@ function App() {
   const question = section?.questions.find((item) => item.number === activeQuestion) ?? section?.questions[0];
 
   useEffect(() => {
-    const syncRoute = () => setStudentCode(studentCodeFromHash());
+    const syncRoute = () => {
+      const route = studentRouteFromHash();
+      setStudentMode(route !== null);
+      setStudentCode(route ?? "");
+    };
     window.addEventListener("hashchange", syncRoute);
     return () => window.removeEventListener("hashchange", syncRoute);
   }, []);
 
   useEffect(() => {
+    if (studentMode) return;
+    let ignore = false;
+    setAuthChecked(false);
+    getAdminSession()
+      .then((session) => {
+        if (!ignore) setAdminSession(session);
+      })
+      .catch(() => {
+        if (!ignore) setAdminSession({ authenticated: false, username: null });
+      })
+      .finally(() => {
+        if (!ignore) setAuthChecked(true);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [studentMode]);
+
+  useEffect(() => {
+    if (!adminSession?.authenticated || studentMode) return;
     void refreshOverview();
     void refreshClasses();
-  }, []);
+  }, [adminSession?.authenticated, studentMode]);
 
   useEffect(() => {
     if (!assignment?.code) return;
@@ -151,6 +189,41 @@ function App() {
   );
   const selectedClassroom = classrooms.find((classroom) => classroom.id === selectedClassId) ?? null;
   const assignmentHref = assignment ? assignment.student_url || `${window.location.origin}/#student/${assignment.code}` : "";
+
+  async function handleLogin(username: string, password: string) {
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const session = await loginAdmin(username, password);
+      setAdminSession(session);
+      setAuthChecked(true);
+    } catch (caught) {
+      setAuthError(caught instanceof Error ? caught.message : "Không thể đăng nhập.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleLogout() {
+    setAuthBusy(true);
+    try {
+      await logoutAdmin();
+    } finally {
+      setAdminSession({ authenticated: false, username: null });
+      setDraft(null);
+      setAssignment(null);
+      setAssignmentResults(null);
+      setAssignmentAnalytics(null);
+      setOverview(null);
+      setClassrooms([]);
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleChangePassword(currentPassword: string, newPassword: string) {
+    const session = await changeAdminPassword(currentPassword, newPassword);
+    setAdminSession(session);
+  }
 
   async function handleFile(file?: File) {
     if (!file) return;
@@ -320,6 +393,7 @@ function App() {
     const code = joinCode.trim().toUpperCase();
     if (!code) return;
     window.location.hash = `student/${code}`;
+    setStudentMode(true);
     setStudentCode(code);
   }
 
@@ -481,11 +555,44 @@ function App() {
     }
   }
 
-  if (studentCode) {
+  if (studentMode && studentCode) {
     return <StudentRunner code={studentCode} onBack={() => {
-      window.location.hash = "";
+      window.location.hash = "student";
+      setStudentMode(true);
       setStudentCode("");
     }} />;
+  }
+
+  if (studentMode) {
+    return (
+      <StudentJoinScreen
+        code={joinCode}
+        onCodeChange={setJoinCode}
+        onJoin={openStudentCode}
+      />
+    );
+  }
+
+  if (!authChecked) {
+    return (
+      <main className="auth-shell">
+        <LoaderCircle className="spin" size={30} />
+      </main>
+    );
+  }
+
+  if (!adminSession?.authenticated) {
+    return (
+      <AdminLoginScreen
+        busy={authBusy}
+        error={authError}
+        onLogin={(username, password) => void handleLogin(username, password)}
+        onOpenStudent={() => {
+          window.location.hash = "student";
+          setStudentMode(true);
+        }}
+      />
+    );
   }
 
   if (!draft) {
@@ -503,8 +610,12 @@ function App() {
         onOpenTeacherAssignment={(code) => void openTeacherAssignment(code)}
         onOpenStudentAssignment={(code) => {
           window.location.hash = `student/${code}`;
+          setStudentMode(true);
           setStudentCode(code);
         }}
+        adminUsername={adminSession.username ?? "Cô Tuyết"}
+        onLogout={() => void handleLogout()}
+        onChangePassword={handleChangePassword}
       />
     );
   }
@@ -613,6 +724,12 @@ function App() {
             <Users size={18} />
             <span>Lớp học</span>
           </button>
+          <AdminAccountMenu
+            compact
+            username={adminSession.username ?? "Cô Tuyết"}
+            onLogout={() => void handleLogout()}
+            onChangePassword={handleChangePassword}
+          />
         </div>
       </header>
 
@@ -982,6 +1099,234 @@ function parseRosterText(text: string): Array<{ name: string; student_code: stri
     .filter((student): student is { name: string; student_code: string } => Boolean(student?.name));
 }
 
+function AdminLoginScreen({
+  busy,
+  error,
+  onLogin,
+  onOpenStudent,
+}: {
+  busy: boolean;
+  error: string;
+  onLogin: (username: string, password: string) => void;
+  onOpenStudent: () => void;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel" aria-labelledby="login-title">
+        <div className="auth-brand">
+          <span className="brand-mark big"><Flower2 size={32} /></span>
+          <div>
+            <strong>Học cùng cô Tuyết</strong>
+            <span>Không gian giáo viên</span>
+          </div>
+        </div>
+        <div className="auth-heading">
+          <span className="panel-icon lavender"><LockKeyhole size={28} /></span>
+          <div>
+            <h1 id="login-title">Đăng nhập giáo viên</h1>
+            <p>Đăng nhập để quản lý đề, lớp học và kết quả.</p>
+          </div>
+        </div>
+        <form
+          className="auth-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onLogin(username.trim(), password);
+          }}
+        >
+          <label>
+            <span>Tên đăng nhập</span>
+            <input
+              autoComplete="username"
+              inputMode="tel"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              disabled={busy}
+              autoFocus
+            />
+          </label>
+          <label>
+            <span>Mật khẩu</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              disabled={busy}
+            />
+          </label>
+          {error && <div className="error-banner">{error}</div>}
+          <button className="primary-button auth-submit" type="submit" disabled={busy || !username.trim() || !password}>
+            {busy ? <LoaderCircle className="spin" size={18} /> : <LockKeyhole size={18} />}
+            <span>{busy ? "Đang đăng nhập" : "Đăng nhập"}</span>
+          </button>
+        </form>
+        <button className="student-entry-link" type="button" onClick={onOpenStudent}>
+          <BookOpen size={18} /> Học sinh nhập mã bài
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function StudentJoinScreen({
+  code,
+  onCodeChange,
+  onJoin,
+}: {
+  code: string;
+  onCodeChange: (value: string) => void;
+  onJoin: () => void;
+}) {
+  return (
+    <main className="auth-shell student-entry-shell">
+      <section className="auth-panel" aria-labelledby="student-entry-title">
+        <div className="auth-brand">
+          <span className="brand-mark big"><Flower2 size={32} /></span>
+          <div>
+            <strong>Học cùng cô Tuyết</strong>
+            <span>Không gian học sinh</span>
+          </div>
+        </div>
+        <div className="auth-heading">
+          <span className="panel-icon sunny"><BookOpen size={28} /></span>
+          <div>
+            <h1 id="student-entry-title">Vào bài kiểm tra</h1>
+            <p>Nhập mã bài cô Tuyết đã gửi cho em.</p>
+          </div>
+        </div>
+        <form
+          className="student-entry-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onJoin();
+          }}
+        >
+          <label htmlFor="student-assignment-code">Mã bài</label>
+          <div>
+            <input
+              id="student-assignment-code"
+              value={code}
+              onChange={(event) => onCodeChange(event.target.value.toUpperCase())}
+              placeholder="AZT-XXXXXX"
+              autoComplete="off"
+              autoFocus
+            />
+            <button className="primary-button" type="submit" disabled={!code.trim()}>
+              <Send size={18} /> <span>Vào bài</span>
+            </button>
+          </div>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function AdminAccountMenu({
+  username,
+  compact = false,
+  onLogout,
+  onChangePassword,
+}: {
+  username: string;
+  compact?: boolean;
+  onLogout: () => void;
+  onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  async function submitPasswordChange(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+    if (newPassword !== confirmPassword) {
+      setError("Mật khẩu xác nhận chưa khớp.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await onChangePassword(currentPassword, newPassword);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setNotice("Đã đổi mật khẩu.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không thể đổi mật khẩu.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        className={compact ? "icon-button" : "teacher-chip"}
+        title="Tài khoản giáo viên"
+        aria-label="Tài khoản giáo viên"
+        onClick={() => setOpen(true)}
+      >
+        {compact ? <KeyRound size={18} /> : "Cô Tuyết"}
+      </button>
+      {open && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setOpen(false)}>
+          <section
+            className="account-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="account-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="account-dialog-head">
+              <div>
+                <h2 id="account-title">Tài khoản giáo viên</h2>
+                <span>{username}</span>
+              </div>
+              <button className="icon-button" type="button" title="Đóng" aria-label="Đóng" onClick={() => setOpen(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            <form className="auth-form" onSubmit={(event) => void submitPasswordChange(event)}>
+              <label>
+                <span>Mật khẩu hiện tại</span>
+                <input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+              </label>
+              <label>
+                <span>Mật khẩu mới</span>
+                <input type="password" minLength={8} autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+              </label>
+              <label>
+                <span>Nhập lại mật khẩu mới</span>
+                <input type="password" minLength={8} autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+              </label>
+              {error && <div className="error-banner">{error}</div>}
+              {notice && <div className="success-banner">{notice}</div>}
+              <div className="account-dialog-actions">
+                <button className="secondary-button danger-button" type="button" onClick={onLogout}>
+                  <LogOut size={18} /> <span>Đăng xuất</span>
+                </button>
+                <button className="primary-button" type="submit" disabled={busy || !currentPassword || newPassword.length < 8 || !confirmPassword}>
+                  {busy ? <LoaderCircle className="spin" size={18} /> : <KeyRound size={18} />}
+                  <span>{busy ? "Đang đổi" : "Đổi mật khẩu"}</span>
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+    </>
+  );
+}
+
 type HomeScreenProps = {
   busy: boolean;
   error: string;
@@ -994,6 +1339,9 @@ type HomeScreenProps = {
   onOpenDraft: (draftId: string) => void;
   onOpenTeacherAssignment: (code: string) => void;
   onOpenStudentAssignment: (code: string) => void;
+  adminUsername: string;
+  onLogout: () => void;
+  onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>;
 };
 
 function HomeScreen({
@@ -1008,6 +1356,9 @@ function HomeScreen({
   onOpenDraft,
   onOpenTeacherAssignment,
   onOpenStudentAssignment,
+  adminUsername,
+  onLogout,
+  onChangePassword,
 }: HomeScreenProps) {
   const drafts = overview?.drafts ?? [];
   const assignments = overview?.assignments ?? [];
@@ -1048,7 +1399,11 @@ function HomeScreen({
             <BookOpen size={24} /> Học sinh
           </button>
         </div>
-        <div className="teacher-chip">Cô Tuyết</div>
+        <AdminAccountMenu
+          username={adminUsername}
+          onLogout={onLogout}
+          onChangePassword={onChangePassword}
+        />
       </header>
 
       <section className="hero-board">
@@ -2264,15 +2619,7 @@ function StudentRunner({ code, onBack }: { code: string; onBack: () => void }) {
     <main className="student-shell">
       <header className="student-header">
         <div className="brand-line">
-          <button
-            className="brand-mark brand-home"
-            type="button"
-            title="Về trang tạo đề"
-            aria-label="Về trang tạo đề"
-            onClick={onBack}
-          >
-            T
-          </button>
+          <span className="brand-mark" aria-hidden="true">T</span>
           <span>Học cùng cô Tuyết</span>
         </div>
         <div className="student-meta">
@@ -2962,9 +3309,10 @@ function AnswerEditor({ sectionType, question, onChange }: { sectionType: Sectio
   );
 }
 
-function studentCodeFromHash() {
+function studentRouteFromHash(): string | null {
+  if (window.location.hash === "#student" || window.location.hash === "#student/") return "";
   const match = window.location.hash.match(/^#student\/(.+)$/);
-  return match ? decodeURIComponent(match[1]) : "";
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
 function answerKey(sectionType: SectionType, questionNumber: number) {

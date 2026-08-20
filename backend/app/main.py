@@ -5,6 +5,7 @@ import csv
 import io
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import zipfile
@@ -15,11 +16,12 @@ from typing import Any
 from uuid import uuid4
 from xml.sax.saxutils import escape
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from backend.app.auth import hash_session_token
 from backend.app.config import get_settings
 from backend.app.services.chatbot import ask_chatbot
 from backend.app.services.grading import grade_exam_submission
@@ -32,6 +34,7 @@ settings = get_settings()
 
 store = DraftStore(settings.database_path)
 app = FastAPI(title="Học cùng cô Tuyết", version="0.3.0")
+ADMIN_SESSION_COOKIE = "math_exam_admin_session"
 
 
 class DraftUpdate(BaseModel):
@@ -88,11 +91,129 @@ class StudentChatPayload(BaseModel):
     history: list[ChatMessagePayload] = []
 
 
+class AdminLoginPayload(BaseModel):
+    username: str
+    password: str
+
+
+class AdminPasswordPayload(BaseModel):
+    current_password: str
+    new_password: str
+
+
 @app.on_event("startup")
 def initialize_storage() -> None:
     settings.upload_root.mkdir(parents=True, exist_ok=True)
     settings.asset_root.mkdir(parents=True, exist_ok=True)
     store.initialize()
+    store.ensure_admin_user(
+        settings.admin_username,
+        settings.admin_password,
+        settings.admin_password_hash,
+    )
+
+
+@app.middleware("http")
+async def require_admin_session(request: Request, call_next):
+    if not _is_public_request(request):
+        token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+        admin = store.get_admin_by_session(hash_session_token(token)) if token else None
+        if not admin:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại."},
+            )
+        request.state.admin = admin
+    return await call_next(request)
+
+
+@app.post("/api/auth/login")
+def admin_login(payload: AdminLoginPayload) -> Response:
+    admin = store.authenticate_admin(payload.username, payload.password)
+    if not admin:
+        raise HTTPException(status_code=401, detail="Tên đăng nhập hoặc mật khẩu không đúng.")
+    token = secrets.token_urlsafe(48)
+    store.create_admin_session(admin["id"], hash_session_token(token), settings.admin_session_days)
+    response = JSONResponse({"authenticated": True, "username": admin["username"]})
+    _set_admin_session_cookie(response, token)
+    return response
+
+
+@app.get("/api/auth/session")
+def admin_session(request: Request) -> dict[str, Any]:
+    token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+    admin = store.get_admin_by_session(hash_session_token(token)) if token else None
+    return {
+        "authenticated": bool(admin),
+        "username": admin["username"] if admin else None,
+    }
+
+
+@app.post("/api/auth/logout")
+def admin_logout(request: Request) -> Response:
+    token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+    if token:
+        store.delete_admin_session(hash_session_token(token))
+    response = JSONResponse({"authenticated": False, "username": None})
+    response.delete_cookie(ADMIN_SESSION_COOKIE, path="/", samesite="lax")
+    return response
+
+
+@app.put("/api/auth/password")
+def change_admin_password(request: Request, payload: AdminPasswordPayload) -> Response:
+    admin = request.state.admin
+    try:
+        store.change_admin_password(admin["id"], payload.current_password, payload.new_password)
+    except PermissionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    token = secrets.token_urlsafe(48)
+    store.create_admin_session(admin["id"], hash_session_token(token), settings.admin_session_days)
+    response = JSONResponse({"authenticated": True, "username": admin["username"]})
+    _set_admin_session_cookie(response, token)
+    return response
+
+
+def _is_public_request(request: Request) -> bool:
+    path = request.url.path.rstrip("/") or "/"
+    method = request.method.upper()
+    if not path.startswith("/api/"):
+        return True
+    if path == "/api/health" and method in {"GET", "HEAD"}:
+        return True
+    if path in {"/api/auth/login", "/api/auth/logout"} and method == "POST":
+        return True
+    if path == "/api/auth/session" and method == "GET":
+        return True
+    if method == "GET" and re.fullmatch(r"/api/assignments/[^/]+", path):
+        return True
+    student_action = re.fullmatch(
+        r"/api/assignments/[^/]+/(submission|attempts|submit|chat)",
+        path,
+    )
+    if student_action:
+        action = student_action.group(1)
+        return (action == "submission" and method == "PUT") or (
+            action in {"attempts", "submit", "chat"} and method == "POST"
+        )
+    if method in {"GET", "HEAD"} and re.fullmatch(r"/api/exams/[^/]+/assets/[^/]+", path):
+        return True
+    return False
+
+
+def _set_admin_session_cookie(response: Response, token: str) -> None:
+    max_age = settings.admin_session_days * 24 * 60 * 60
+    response.set_cookie(
+        key=ADMIN_SESSION_COOKIE,
+        value=token,
+        max_age=max_age,
+        httponly=True,
+        secure=settings.app_env.lower() not in {"local", "development", "test"},
+        samesite="lax",
+        path="/",
+    )
 
 
 @app.get("/api/health")

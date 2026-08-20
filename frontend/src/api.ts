@@ -13,6 +13,11 @@ import type {
   SubmissionResult,
 } from "./types";
 
+export type AdminSession = {
+  authenticated: boolean;
+  username: string | null;
+};
+
 async function readResponse(response: Response): Promise<ExamDraft> {
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { detail?: string } | null;
@@ -27,6 +32,37 @@ async function readJson<T>(response: Response): Promise<T> {
     throw new Error(body?.detail || "Không thể hoàn tất yêu cầu.");
   }
   return response.json() as Promise<T>;
+}
+
+export async function getAdminSession(): Promise<AdminSession> {
+  return readJson<AdminSession>(await fetch("/api/auth/session"));
+}
+
+export async function loginAdmin(username: string, password: string): Promise<AdminSession> {
+  return readJson<AdminSession>(
+    await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    }),
+  );
+}
+
+export async function logoutAdmin(): Promise<AdminSession> {
+  return readJson<AdminSession>(await fetch("/api/auth/logout", { method: "POST" }));
+}
+
+export async function changeAdminPassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<AdminSession> {
+  return readJson<AdminSession>(
+    await fetch("/api/auth/password", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
+  );
 }
 
 export async function importExam(file: File): Promise<ExamDraft> {

@@ -7,8 +7,9 @@ MathExam spark MVP: chuyển đề Toán `.docx` theo form Azota thành đề th
 - Phase 0: cấu trúc project, fixture, test vàng cho file mẫu.
 - Phase 1: DOCX parser đọc 3 phần đề, bảng đáp án, inline image/WMF/EMF và metadata kích thước Word.
 - Phase 2: upload/review đề, sửa nội dung, đáp án, điểm, lưu bản nháp SQLite.
-- Phase 3 đã có MVP: lớp học demo, mã giao bài, giao diện học sinh, đếm ngược thời gian, tự nộp khi hết giờ, dashboard giáo viên và thống kê cơ bản.
-- Chưa làm AI sinh đề, chấm tự luận bằng AI, đăng nhập thật hoặc phân quyền sản xuất.
+- Phase 3 đã có MVP: lớp học, mã giao bài, nhiều lượt làm, giao diện học sinh, đếm ngược thời gian, tự nộp khi hết giờ, dashboard giáo viên và thống kê cơ bản.
+- Khu vực giáo viên dùng tài khoản admin và session cookie; học sinh vẫn vào bài bằng link hoặc mã bài.
+- Chưa làm AI sinh đề, chấm tự luận bằng AI hoặc hệ thống nhiều tài khoản giáo viên.
 
 ## Chạy local
 
@@ -76,7 +77,7 @@ py -m backend.app.services.parser.cli data\samples\de-mau-azota.docx `
 
 File `.env` dùng cho máy local và đã bị chặn trong `.gitignore`. File `.env.example` là mẫu có thể commit.
 
-Hiện tại chưa cần API key để import, review, giao đề và làm bài. `OPENAI_API_KEY` được để sẵn cho các pha AI sau này.
+Hiện tại chưa cần API key để import, review, giao đề và làm bài. Các biến `ADMIN_USERNAME`, `ADMIN_PASSWORD` chỉ dùng để tạo tài khoản quản trị khi database chưa có tài khoản; mật khẩu sau đó được lưu dưới dạng băm và có thể đổi trong giao diện.
 
 ## WMF/EMF
 

@@ -4,15 +4,32 @@ import json
 import sqlite3
 from contextlib import closing
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from backend.app.services.grading import grade_exam_submission
+from backend.app.auth import hash_password, verify_password
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS admin_users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES admin_users(id)
+);
+
 CREATE TABLE IF NOT EXISTS exam_drafts (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -134,6 +151,9 @@ ON assignment_students(assignment_id, active);
 
 CREATE INDEX IF NOT EXISTS idx_submission_grades_submission_id
 ON submission_grades(submission_id);
+
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at
+ON admin_sessions(expires_at);
 """
 
 
@@ -147,6 +167,92 @@ class DraftStore:
             connection.executescript(SCHEMA)
             self._migrate(connection)
             connection.execute("PRAGMA optimize")
+
+    def ensure_admin_user(
+        self,
+        username: str,
+        password: str,
+        password_hash: str = "",
+    ) -> dict[str, Any]:
+        normalized_username = username.strip()
+        encoded_password = hash_password(password) if password else password_hash.strip()
+        if not normalized_username or not encoded_password.startswith("pbkdf2_sha256$"):
+            raise ValueError("Admin username and bootstrap password must be configured.")
+        now = _utc_now()
+        with closing(self._connect()) as connection, connection:
+            existing = connection.execute(
+                "SELECT id, username FROM admin_users ORDER BY created_at LIMIT 1"
+            ).fetchone()
+            if existing:
+                return dict(existing)
+            user_id = uuid4().hex
+            connection.execute(
+                """
+                INSERT INTO admin_users (id, username, password_hash, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, normalized_username, encoded_password, now, now),
+            )
+            return {"id": user_id, "username": normalized_username}
+
+    def authenticate_admin(self, username: str, password: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT id, username, password_hash FROM admin_users WHERE username = ?",
+                (username.strip(),),
+            ).fetchone()
+        if not row or not verify_password(password, row["password_hash"]):
+            return None
+        return {"id": row["id"], "username": row["username"]}
+
+    def create_admin_session(self, user_id: str, token_hash: str, duration_days: int) -> None:
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(days=duration_days)
+        with closing(self._connect()) as connection, connection:
+            connection.execute("DELETE FROM admin_sessions WHERE expires_at <= ?", (now.isoformat(),))
+            connection.execute(
+                """
+                INSERT INTO admin_sessions (token_hash, user_id, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (token_hash, user_id, now.isoformat(), expires_at.isoformat()),
+            )
+
+    def get_admin_by_session(self, token_hash: str) -> dict[str, Any] | None:
+        now = _utc_now()
+        with closing(self._connect()) as connection, connection:
+            connection.execute("DELETE FROM admin_sessions WHERE expires_at <= ?", (now,))
+            row = connection.execute(
+                """
+                SELECT u.id, u.username, s.expires_at
+                FROM admin_sessions s
+                JOIN admin_users u ON u.id = s.user_id
+                WHERE s.token_hash = ? AND s.expires_at > ?
+                """,
+                (token_hash, now),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_admin_session(self, token_hash: str) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.execute("DELETE FROM admin_sessions WHERE token_hash = ?", (token_hash,))
+
+    def change_admin_password(self, user_id: str, current_password: str, new_password: str) -> None:
+        if len(new_password) < 8:
+            raise ValueError("Mật khẩu mới phải có ít nhất 8 ký tự.")
+        now = _utc_now()
+        with closing(self._connect()) as connection, connection:
+            row = connection.execute(
+                "SELECT password_hash FROM admin_users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+            if not row or not verify_password(current_password, row["password_hash"]):
+                raise PermissionError("Mật khẩu hiện tại không đúng.")
+            connection.execute(
+                "UPDATE admin_users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                (hash_password(new_password), now, user_id),
+            )
+            connection.execute("DELETE FROM admin_sessions WHERE user_id = ?", (user_id,))
 
     def _migrate(self, connection: sqlite3.Connection) -> None:
         assignment_columns = {

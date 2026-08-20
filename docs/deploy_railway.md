@@ -46,6 +46,10 @@ MAX_UPLOAD_MB=25
 MAGICK_BINARY=convert
 MATH_EXAM_CUSTOM_FONT_DIR=/usr/local/share/fonts/mathexam
 
+ADMIN_USERNAME=0912311121
+ADMIN_PASSWORD=your_initial_admin_password
+ADMIN_SESSION_DAYS=7
+
 AUTO_OCR_ON_IMPORT=true
 AUTO_OCR_MAX_WORKERS=2
 AUTO_OCR_BATCH_SIZE=10
@@ -70,6 +74,8 @@ NVIDIA_CHAT_MODEL=nvidia/nemotron-3-nano-30b-a3b
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5-mini
 ```
+
+`ADMIN_PASSWORD` chỉ được dùng để tạo tài khoản khi database chưa có admin. Sau lần đăng nhập đầu tiên, có thể đổi mật khẩu trong menu tài khoản giáo viên; mật khẩu mới được băm trong SQLite và không cần ghi lại vào Railway.
 
 For Railway's smaller free/trial resources, start with:
 
@@ -158,7 +164,7 @@ The response should also show:
 
 ## Test checklist
 
-1. Open the teacher page.
+1. Open the teacher page and log in with the admin account.
 2. Upload the sample DOCX.
 3. Confirm OCR finishes or press `OCR de` / `OCR sot` if needed.
 4. Create/save class roster.

@@ -6,6 +6,10 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ADMIN_PASSWORD_HASH = (
+    "pbkdf2_sha256$310000$3VvI_J65X3m6DqA_w_g77w==$"
+    "BaKp_Bv0HdF3dbfrhZTiz3fCIM0Dd5GmUeyyZZLU5lM="
+)
 
 
 def load_dotenv(path: Path | None = None) -> None:
@@ -76,6 +80,10 @@ class Settings:
     nvidia_ocr_model: str
     nvidia_ocr_base_url: str
     nvidia_chat_model: str
+    admin_username: str
+    admin_password: str
+    admin_password_hash: str
+    admin_session_days: int
 
 
 def _list_from_env(name: str) -> tuple[str, ...]:
@@ -135,4 +143,8 @@ def get_settings() -> Settings:
         nvidia_ocr_model=os.getenv("NVIDIA_OCR_MODEL", "nvidia/nemotron-ocr-v2"),
         nvidia_ocr_base_url=os.getenv("NVIDIA_OCR_BASE_URL", "").strip().rstrip("/"),
         nvidia_chat_model=os.getenv("NVIDIA_CHAT_MODEL", "nvidia/nemotron-3-nano-30b-a3b"),
+        admin_username=os.getenv("ADMIN_USERNAME", "0912311121").strip(),
+        admin_password=os.getenv("ADMIN_PASSWORD", ""),
+        admin_password_hash=os.getenv("ADMIN_PASSWORD_HASH", DEFAULT_ADMIN_PASSWORD_HASH),
+        admin_session_days=max(1, _int_from_env("ADMIN_SESSION_DAYS", 7)),
     )
