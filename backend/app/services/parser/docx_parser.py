@@ -434,7 +434,9 @@ def _omml_node_to_latex(element: ET.Element) -> str:
         text = "".join(_math_text_to_latex(node.text or "") for node in element.findall("m:t", NS))
         script = element.find("m:rPr/m:scr", NS)
         if script is not None and _attribute_value(script, "val") == "double-struck":
-            raw = "".join(node.text or "" for node in element.findall("m:t", NS))
+            raw = _strip_private_use_characters(
+                "".join(node.text or "" for node in element.findall("m:t", NS))
+            )
             if raw:
                 return rf"\mathbb{{{raw}}}"
         return text
@@ -447,10 +449,16 @@ def _omml_node_to_latex(element: ET.Element) -> str:
         begin = _delimiter_property(props, "begChr", "(")
         end = _delimiter_property(props, "endChr", ")")
         contents = [_omml_node_to_latex(child) for child in element.findall("m:e", NS)]
-        if begin == "|" and not end:
-            return rf"\mid {''.join(contents)}"
         separator = _delimiter_property(props, "sepChr", "|")
         inner = separator.join(contents)
+        if not begin and end == "|":
+            return rf"{inner}\mid "
+        if begin == "|" and not end:
+            return rf"\mid {inner}"
+        if not begin:
+            return f"{inner}{_plain_delimiter(end)}"
+        if not end:
+            return f"{_plain_delimiter(begin)}{inner}"
         return f"{_left_delimiter(begin)}{inner}{_right_delimiter(end)}"
     if tag == "func":
         name = _omml_container_to_latex(element.find("m:fName", NS))
@@ -505,7 +513,7 @@ def _delimiter_property(props: ET.Element | None, name: str, default: str) -> st
 def _left_delimiter(value: str) -> str:
     if not value:
         return ""
-    escaped = r"\{" if value == "{" else r"\lvert" if value == "|" else value
+    escaped = r"\{" if value == "{" else r"\lvert " if value == "|" else value
     return rf"\left{escaped}"
 
 
@@ -514,6 +522,16 @@ def _right_delimiter(value: str) -> str:
         return ""
     escaped = r"\}" if value == "}" else r"\rvert" if value == "|" else value
     return rf"\right{escaped}"
+
+
+def _plain_delimiter(value: str) -> str:
+    if value == "{":
+        return r"\{"
+    if value == "}":
+        return r"\}"
+    if value == "|":
+        return r"\mid "
+    return value
 
 
 def _math_text_to_latex(text: str) -> str:
@@ -533,11 +551,24 @@ def _math_text_to_latex(text: str) -> str:
         "∣": r"\mid ",
         "ℝ": r"\mathbb{R}",
         "ℤ": r"\mathbb{Z}",
+        "ℕ": r"\mathbb{N}",
+        "ℚ": r"\mathbb{Q}",
+        "∩": r"\cap ",
+        "∪": r"\cup ",
+        "∅": r"\varnothing ",
         "×": r"\times ",
     }
-    output = "".join(replacements.get(char, r"\setminus " if char == "\\" else char) for char in text)
+    cleaned = "".join(
+        " " if char.isspace() else char
+        for char in _strip_private_use_characters(text)
+    )
+    output = "".join(replacements.get(char, r"\setminus " if char == "\\" else char) for char in cleaned)
     function_pattern = r"(?<![A-Za-z\\])(arcsin|arccos|arctan|sin|cos|tan|cot|sec|csc|log|ln|exp)(?=[A-Za-z0-9(])"
     return re.sub(function_pattern, lambda match: rf"\{match.group(1)} ", output)
+
+
+def _strip_private_use_characters(text: str) -> str:
+    return "".join(char for char in text if unicodedata.category(char) != "Co")
 
 
 def _image_references(element: ET.Element) -> list[dict[str, Any]]:
@@ -1012,11 +1043,11 @@ def _question_number(text: str) -> int | None:
 
 def _section_type_from_heading(text: str) -> str | None:
     folded = _fold(text)
-    if re.search(r"\bphan\s+iii\b", folded):
+    if re.search(r"\bphan\s+(?:iii|3)\b", folded):
         return "short_answer"
-    if re.search(r"\bphan\s+ii\b", folded):
+    if re.search(r"\bphan\s+(?:ii|2)\b", folded):
         return "true_false"
-    if re.search(r"\bphan\s+i\b", folded):
+    if re.search(r"\bphan\s+(?:i|1)\b", folded):
         return "single_choice"
     return None
 

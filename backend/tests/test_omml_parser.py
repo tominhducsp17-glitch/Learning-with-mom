@@ -4,13 +4,14 @@ import base64
 import sys
 import tempfile
 import unittest
+from xml.etree import ElementTree as ET
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.app.services.parser import parse_docx_exam
+from backend.app.services.parser import docx_parser, parse_docx_exam
 
 
 class OmmlDocxParserTest(unittest.TestCase):
@@ -106,6 +107,58 @@ class OmmlDocxParserTest(unittest.TestCase):
 
         self.assertEqual(_math_blocks(question_11["prompt_blocks"]), decoded)
 
+    def test_section_headings_accept_roman_and_arabic_numbers(self) -> None:
+        expected = {
+            "single_choice": ("PHẦN I", "PHẦN 1"),
+            "true_false": ("PHẦN II", "PHẦN 2"),
+            "short_answer": ("PHẦN III", "PHẦN 3"),
+        }
+
+        for section_type, headings in expected.items():
+            for heading in headings:
+                with self.subTest(heading=heading):
+                    self.assertEqual(
+                        section_type,
+                        docx_parser._section_type_from_heading(f"{heading}. Nội dung"),
+                    )
+
+    def test_word_math_handles_set_separator_and_absolute_value_delimiters(self) -> None:
+        separator = _omml_element(
+            """
+            <m:d>
+              <m:dPr><m:begChr m:val=""/><m:endChr m:val="|"/></m:dPr>
+              <m:e><m:r><m:t>x∈ℤ</m:t></m:r></m:e>
+            </m:d>
+            """
+        )
+        absolute_value = _omml_element(
+            """
+            <m:d>
+              <m:dPr><m:begChr m:val="|"/><m:endChr m:val="|"/></m:dPr>
+              <m:e><m:r><m:t>x</m:t></m:r></m:e>
+            </m:d>
+            """
+        )
+
+        self.assertEqual(r"x\in \mathbb{Z}\mid ", docx_parser._omml_node_to_latex(separator))
+        self.assertEqual(
+            r"\left\lvert x\right\rvert",
+            docx_parser._omml_node_to_latex(absolute_value),
+        )
+
+    def test_word_math_handles_one_sided_delimiters_and_legacy_font_noise(self) -> None:
+        right_parenthesis = _omml_element(
+            """
+            <m:d>
+              <m:dPr><m:begChr m:val=""/></m:dPr>
+              <m:e><m:r><m:t>0;1</m:t></m:r></m:e>
+            </m:d>
+            """
+        )
+        self.assertEqual("0;1)", docx_parser._omml_node_to_latex(right_parenthesis))
+        self.assertEqual("N", docx_parser._strip_private_use_characters("N\uf700\uf8e6"))
+        self.assertEqual("(I) C", docx_parser._math_text_to_latex("(I)\u2004C"))
+
 
 def _question(section: dict, number: int) -> dict:
     return next(question for question in section["questions"] if question["number"] == number)
@@ -117,6 +170,12 @@ def _math_blocks(blocks: list[dict]) -> list[str]:
 
 def _math_text(blocks: list[dict]) -> str:
     return "".join(_math_blocks(blocks))
+
+
+def _omml_element(xml: str) -> ET.Element:
+    namespace = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+    wrapper = ET.fromstring(f'<root xmlns:m="{namespace}">{xml}</root>')
+    return wrapper[0]
 
 
 if __name__ == "__main__":
