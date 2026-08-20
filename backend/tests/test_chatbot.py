@@ -10,6 +10,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.app.main import _friendly_ai_error_message, _markup_to_chat_text
 from backend.app.services.chatbot import (
+    SYSTEM_PROMPT,
     _extract_chat_completion_text,
     _extract_gemini_text,
     _extract_openai_text,
@@ -18,6 +19,13 @@ from backend.app.services.chatbot import (
 
 
 class ChatbotHelpersTest(unittest.TestCase):
+    def test_system_prompt_only_rechecks_when_student_challenges_answer(self) -> None:
+        self.assertIn("Mac dinh hay giai thich dua tren dap an he thong", SYSTEM_PROMPT)
+        self.assertIn("Chi khi hoc sinh thac mac tinh dung sai cua dap an", SYSTEM_PROMPT)
+        self.assertIn("hay tu giai bai doc lap tu dau", SYSTEM_PROMPT)
+        self.assertIn("dap an he thong co the chua chinh xac", SYSTEM_PROMPT)
+        self.assertIn("Khong tu thay doi diem", SYSTEM_PROMPT)
+
     def test_markup_to_chat_text_decodes_math64(self) -> None:
         text = _markup_to_chat_text("Tinh [math64:$eCsx$] va [img:$img_0001$]")
 
