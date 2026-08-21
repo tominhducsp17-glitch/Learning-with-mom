@@ -22,6 +22,7 @@ SYSTEM_PROMPT = (
     "Neu hoc sinh hoi ngoai cau hoi hien tai, hay nhe nhang dua ve cau hoi dang xem. "
     "Cong thuc duoc viet bang LaTeX, khong can boc trong dau dollar."
 )
+GEMINI_CHAT_TIMEOUT_SECONDS = 25
 
 
 def ask_chatbot(
@@ -160,13 +161,15 @@ def _ask_gemini(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
+        with urllib.request.urlopen(request, timeout=GEMINI_CHAT_TIMEOUT_SECONDS) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Gemini chatbot loi {exc.code}: {detail[:800]}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Khong ket noi duoc Gemini chatbot: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise RuntimeError("Gemini chatbot timeout.") from exc
 
     text = _extract_gemini_text(data)
     if not text:
@@ -425,7 +428,10 @@ def _gemini_key_chain(primary_key: str, extra_keys: tuple[str, ...] | list[str])
 
 def _is_retryable_ai_error(exc: RuntimeError) -> bool:
     text = str(exc).lower()
-    return any(marker in text for marker in (" 429", "quota", "rate", "resource_exhausted", " 503", "unavailable"))
+    return any(
+        marker in text
+        for marker in (" 429", "quota", "rate", "resource_exhausted", " 503", "unavailable", "timeout", "timed out")
+    )
 
 
 def _extract_gemini_text(data: dict[str, Any]) -> str:

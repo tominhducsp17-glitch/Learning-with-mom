@@ -123,6 +123,20 @@ class ChatbotHelpersTest(unittest.TestCase):
         self.assertNotIn("temperature", payload["generationConfig"])
         self.assertIn("gemini-3.5-flash-lite", request.full_url)
 
+    @patch("backend.app.services.chatbot.urllib.request.urlopen", side_effect=TimeoutError("timed out"))
+    def test_gemini_timeout_becomes_retryable_runtime_error(self, urlopen) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Gemini chatbot timeout"):
+            _ask_gemini(
+                message="Tai sao?",
+                context="Cau hoi tap hop.",
+                history=[],
+                api_key="same-key",
+                model="gemini-3.1-flash-lite",
+                system_prompt="Giai thich ngan gon.",
+            )
+
+        self.assertEqual(25, urlopen.call_args.kwargs["timeout"])
+
     def test_friendly_ai_error_hides_raw_api_payload(self) -> None:
         message = _friendly_ai_error_message(
             RuntimeError('Gemini chatbot loi 400: {"reason":"API_KEY_INVALID","message":"API key not valid."}')
