@@ -35,6 +35,7 @@ def ask_chatbot(
     gemini_api_key: str = "",
     gemini_api_keys: tuple[str, ...] | list[str] = (),
     gemini_model: str = "gemini-3.1-flash-lite",
+    gemini_models: tuple[str, ...] | list[str] = (),
     openrouter_api_key: str = "",
     openrouter_model: str = "nvidia/nemotron-nano-12b-v2-vl:free",
     tokenrouter_api_key: str = "",
@@ -65,7 +66,7 @@ def ask_chatbot(
             context=context,
             history=safe_history,
             api_keys=_gemini_key_chain(gemini_api_key, gemini_api_keys),
-            model=gemini_model,
+            models=_gemini_model_chain(gemini_model, gemini_models),
             system_prompt=system_prompt,
         )
     if provider == "openai":
@@ -129,6 +130,11 @@ def _ask_gemini(
         f"?key={urllib.parse.quote(api_key, safe='')}"
     )
     history_text = _history_text(history)
+    generation_config: dict[str, Any] = {
+        "maxOutputTokens": 700,
+    }
+    if not model_name.startswith(("gemini-3.5-", "gemini-3.6-")):
+        generation_config["temperature"] = 0.2
     payload = {
         "contents": [
             {
@@ -145,10 +151,7 @@ def _ask_gemini(
                 ],
             }
         ],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 700,
-        },
+        "generationConfig": generation_config,
     }
     request = urllib.request.Request(
         endpoint,
@@ -177,27 +180,40 @@ def _ask_gemini_fallback(
     context: str,
     history: list[dict[str, str]],
     api_keys: tuple[str, ...],
-    model: str,
+    models: tuple[str, ...],
     system_prompt: str,
 ) -> str:
     if not api_keys:
         raise ValueError("GEMINI_API_KEY chua duoc cau hinh.")
     errors: list[str] = []
-    for api_key in api_keys:
-        try:
-            return _ask_gemini(
-                message=message,
-                context=context,
-                history=history,
-                api_key=api_key,
-                model=model,
-                system_prompt=system_prompt,
-            )
-        except RuntimeError as exc:
-            errors.append(str(exc))
-            if not _is_retryable_ai_error(exc):
-                raise
-    raise RuntimeError(f"Tat ca Gemini chatbot key deu loi tam thoi/quota. Loi cuoi: {errors[-1]}")
+    for model in models:
+        for api_key in api_keys:
+            try:
+                return _ask_gemini(
+                    message=message,
+                    context=context,
+                    history=history,
+                    api_key=api_key,
+                    model=model,
+                    system_prompt=system_prompt,
+                )
+            except RuntimeError as exc:
+                errors.append(f"{model}: {exc}")
+                if not _is_retryable_ai_error(exc):
+                    raise
+    raise RuntimeError(f"Tat ca Gemini chatbot model/key deu loi tam thoi/quota. Loi cuoi: {errors[-1]}")
+
+
+def _gemini_model_chain(
+    primary_model: str,
+    configured_models: tuple[str, ...] | list[str],
+) -> tuple[str, ...]:
+    models: list[str] = []
+    for model in [primary_model, *configured_models]:
+        cleaned = str(model).strip()
+        if cleaned and cleaned not in models:
+            models.append(cleaned)
+    return tuple(models)
 
 
 def _ask_openai(

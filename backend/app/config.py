@@ -73,6 +73,7 @@ class Settings:
     gemini_api_key: str
     gemini_api_keys: tuple[str, ...]
     gemini_model: str
+    gemini_chat_models: tuple[str, ...]
     openrouter_api_key: str
     openrouter_ocr_model: str
     openrouter_chat_model: str
@@ -107,12 +108,23 @@ def _provider_chain_from_env(name: str, fallback_provider: str) -> tuple[str, ..
     return tuple(cleaned)
 
 
+def _model_chain_from_env(name: str, defaults: tuple[str, ...]) -> tuple[str, ...]:
+    models = _list_from_env(name) or defaults
+    cleaned: list[str] = []
+    for model in models:
+        value = model.strip()
+        if value and value not in cleaned:
+            cleaned.append(value)
+    return tuple(cleaned)
+
+
 def get_settings() -> Settings:
     load_dotenv()
     storage_root = _path_from_env("MATH_EXAM_STORAGE_ROOT", "storage")
     database_path = _path_from_env("MATH_EXAM_DATABASE_PATH", "storage/math_exam.sqlite3")
     max_upload_mb = _int_from_env("MAX_UPLOAD_MB", 25)
     gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip()
     gemini_api_keys = []
     if gemini_api_key:
         gemini_api_keys.append(gemini_api_key)
@@ -138,7 +150,11 @@ def get_settings() -> Settings:
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
         gemini_api_key=gemini_api_key,
         gemini_api_keys=tuple(gemini_api_keys),
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+        gemini_model=gemini_model,
+        gemini_chat_models=_model_chain_from_env(
+            "GEMINI_CHAT_MODEL_CHAIN",
+            (gemini_model, "gemini-3.5-flash-lite"),
+        ),
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
         openrouter_ocr_model=os.getenv("OPENROUTER_OCR_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free"),
         openrouter_chat_model=os.getenv("OPENROUTER_CHAT_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free"),

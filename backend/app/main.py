@@ -252,6 +252,7 @@ def health() -> dict[str, Any]:
             "models": {
                 "openai": settings.openai_model,
                 "gemini": settings.gemini_model,
+                "gemini_chat": settings.gemini_chat_models,
                 "openrouter_ocr": settings.openrouter_ocr_model,
                 "openrouter_chat": settings.openrouter_chat_model,
                 "tokenrouter_chat": settings.tokenrouter_chat_model,
@@ -887,6 +888,7 @@ def _ask_chatbot_with_provider(
         gemini_api_key=settings.gemini_api_key,
         gemini_api_keys=settings.gemini_api_keys,
         gemini_model=settings.gemini_model,
+        gemini_models=settings.gemini_chat_models,
         openrouter_api_key=settings.openrouter_api_key,
         openrouter_model=settings.openrouter_chat_model,
         tokenrouter_api_key=settings.tokenrouter_api_key,

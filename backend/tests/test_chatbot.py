@@ -17,6 +17,9 @@ from backend.app.services.chatbot import (
     _extract_gemini_text,
     _extract_openai_text,
     _gemini_key_chain,
+    _gemini_model_chain,
+    _ask_gemini,
+    _ask_gemini_fallback,
 )
 
 
@@ -72,6 +75,53 @@ class ChatbotHelpersTest(unittest.TestCase):
 
     def test_gemini_key_chain_dedupes_primary_and_fallback_keys(self) -> None:
         self.assertEqual(("main", "backup"), _gemini_key_chain("main", ["backup", "main"]))
+
+    def test_gemini_model_chain_dedupes_primary_and_fallback_models(self) -> None:
+        self.assertEqual(
+            ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite"),
+            _gemini_model_chain(
+                "gemini-3.1-flash-lite",
+                ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
+            ),
+        )
+
+    @patch("backend.app.services.chatbot._ask_gemini")
+    def test_gemini_falls_back_to_next_model_with_same_key(self, ask_gemini) -> None:
+        ask_gemini.side_effect = [RuntimeError("Gemini chatbot loi 429: quota"), "Da tra loi."]
+
+        answer = _ask_gemini_fallback(
+            message="Tai sao?",
+            context="Cau hoi tap hop.",
+            history=[],
+            api_keys=("same-key",),
+            models=("gemini-3.1-flash-lite", "gemini-3.5-flash-lite"),
+            system_prompt="Giai thich ngan gon.",
+        )
+
+        self.assertEqual("Da tra loi.", answer)
+        self.assertEqual("gemini-3.1-flash-lite", ask_gemini.call_args_list[0].kwargs["model"])
+        self.assertEqual("gemini-3.5-flash-lite", ask_gemini.call_args_list[1].kwargs["model"])
+        self.assertEqual("same-key", ask_gemini.call_args_list[1].kwargs["api_key"])
+
+    @patch("backend.app.services.chatbot.urllib.request.urlopen")
+    def test_gemini_35_omits_deprecated_temperature(self, urlopen) -> None:
+        response = urlopen.return_value.__enter__.return_value
+        response.read.return_value = b'{"candidates":[{"content":{"parts":[{"text":"OK"}]}}]}'
+
+        answer = _ask_gemini(
+            message="Tai sao?",
+            context="Cau hoi tap hop.",
+            history=[],
+            api_key="same-key",
+            model="gemini-3.5-flash-lite",
+            system_prompt="Giai thich ngan gon.",
+        )
+
+        request = urlopen.call_args.args[0]
+        payload = __import__("json").loads(request.data.decode("utf-8"))
+        self.assertEqual("OK", answer)
+        self.assertNotIn("temperature", payload["generationConfig"])
+        self.assertIn("gemini-3.5-flash-lite", request.full_url)
 
     def test_friendly_ai_error_hides_raw_api_payload(self) -> None:
         message = _friendly_ai_error_message(
